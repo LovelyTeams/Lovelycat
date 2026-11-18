@@ -1,24 +1,41 @@
+<div align="center">
+  <img src="assets/lovelycat.png" width="132" alt="抱着金钥匙的 Lovelycat 猫耳角色">
+  <h1>Lovelycat</h1>
+  <p><strong>Windows 上的 Hashcat 图形界面与磁盘取证工作台</strong></p>
+  <p><code>Windows x64</code> &nbsp;·&nbsp; <code>Rust + GPUI</code></p>
+  <p>
+    <a href="#快速开始">快速开始</a> &nbsp;·&nbsp;
+    <a href="#密码恢复">密码恢复</a> &nbsp;·&nbsp;
+    <a href="#磁盘取证">磁盘取证</a> &nbsp;·&nbsp;
+    <a href="#引擎工具">引擎工具</a>
+  </p>
+</div>
+
 <p align="center">
-  <img src="assets/lovelycat.png" width="120" alt="Lovelycat 图标">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/preview/workbench-dark.jpg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/preview/workbench-light.jpg">
+    <img src="assets/preview/workbench-light.jpg" width="960" alt="Lovelycat 猫耳窗口，显示密码恢复表单、任务进度和磁盘取证入口">
+  </picture>
 </p>
 
-# Lovelycat
+## 快速开始
 
-Lovelycat 是基于 Rust 和 GPUI 的 Windows x64 桌面工具。它将本地 Hashcat 密码恢复和磁盘镜像解密放在同一个工作台，支持从常见加密文档或归档直接创建恢复任务，也能用已知凭据导出 BitLocker 和 LUKS 解密卷。
-
-## 构建与启动
-
-在 Windows x64 上使用 Rust MSVC 工具链和 Visual Studio C++ 构建工具，安装 Windows SDK。项目已在 Rust 1.93.1 上验证。[Rust MSVC 构建文档](https://doc.rust-lang.org/rustc/platform-support/windows-msvc.html)
+在 Windows x64 上安装 Rust MSVC 工具链、Visual Studio C++ 构建工具和 Windows SDK。项目已在 Rust 1.93.1 上验证。[Rust MSVC 构建文档](https://doc.rust-lang.org/rustc/platform-support/windows-msvc.html)
 
 ```powershell
+git clone https://github.com/LovelyTeams/Lovelycat.git
+Set-Location Lovelycat
 cargo build --release --locked
 .\target\release\lovelycat.exe
 ```
 
-- **恢复密码**时，打开「设置」选择已有的 `hashcat.exe`，或从「下载资源」安装 Hashcat 8.0.0。用「检测设备」查看引擎识别到的显卡和驱动。
-- **解密磁盘镜像**时，首次打开「磁盘取证」并点击「安装组件」。程序会下载并校验独立运行环境，安装后可离线处理镜像。
+| 开始使用 | 在 Lovelycat 中操作 |
+| --- | --- |
+| 恢复文件密码 | 在「设置」连接已有的 `hashcat.exe`，或从「下载资源」安装 Hashcat 8.0.0。「检测设备」显示引擎识别到的显卡和驱动 |
+| 解密磁盘镜像 | 在「磁盘取证」点击「安装组件」。程序会校验下载包，安装后可离线处理镜像 |
 
-## 本地密码恢复
+## 密码恢复
 
 1. 在「恢复任务」中拖入加密文件，或导入哈希文件、粘贴已有哈希。直接导入加密文件时，Lovelycat 会识别可用的 Hashcat 模式。
 2. 选择字典、掩码、组合或混合等候选模式。常用掩码可通过模板填写，字典模式可以生成并预览 UTF-8 字典和 `.rule` 文件。
@@ -46,14 +63,14 @@ cargo build --release --locked
 
 ## 磁盘取证
 
-「磁盘取证」可以读取 RAW 整盘或卷镜像（如 `.dd`、`.img`）、分段 EWF v1 以及独立的固定或动态 VHD、VHDX。EWF 镜像从首段 `.E01` 导入，各分段放在同一目录。差分链可以先合并为独立副本。
+以只读方式导入 RAW 整盘或卷镜像（如 `.dd`、`.img`）、分段 EWF v1，或独立的固定与动态 VHD、VHDX。EWF 镜像从首段 `.E01` 导入，各分段放在同一目录。差分链可以先合并为独立副本。
 
 | 加密卷 | 可用凭据 |
 | --- | --- |
 | BitLocker | 卷密码、48 位数字恢复密钥或对应的 `.BEK` 文件，取决于卷上的保护器 |
 | LUKS1、LUKS2 | 卷密码或二进制密钥文件 |
 
-导入后，程序显示 GPT 或 MBR 分区及其字节偏移。选择卷并输入已知凭据，再点击「解密并导出」。Lovelycat 以只读方式打开源镜像，将选中的卷保存为新的 RAW 文件。导出完成后可复制包含源卷偏移、导出长度和 SHA-256 的取证记录。镜像读取与卷解密使用 Dissect。[Dissect 加密卷 API](https://github.com/fox-it/dissect.fve) · [镜像格式](https://docs.dissect.tools/en/latest/supported-targets.html)
+导入后，程序显示 GPT 或 MBR 分区及其字节偏移。选择卷并输入已知凭据，点击「解密并导出」即可保存新的 RAW 卷镜像，并复制包含源卷偏移、导出长度和 SHA-256 的取证记录。镜像读取与卷解密使用 Dissect。[Dissect 加密卷 API](https://github.com/fox-it/dissect.fve) · [镜像格式](https://docs.dissect.tools/en/latest/supported-targets.html)
 
 ## 引擎工具
 
@@ -77,8 +94,13 @@ cargo fmt -- --check
 cargo test --release --locked
 ```
 
-取证集成测试会在临时目录安装独立运行环境，并使用公开的 LUKS2 测试镜像验证导出、取消和输出文件保护。
+<details>
+<summary>运行磁盘取证集成测试</summary>
+
+测试会在临时目录安装独立运行环境，并使用公开的 LUKS2 测试镜像验证导出、取消和输出文件保护。
 
 ```powershell
 cargo test --release --locked exports_volume_and_keeps_sources_and_existing_files_intact -- --ignored
 ```
+
+</details>
