@@ -1,0 +1,38 @@
+[
+  {
+    "url": "https://www.python.org/ftp/python/3.14.10/python-3.14.10-embed-amd64.zip",
+    "sha256": "90905e64a840557d8c1bc4f5b74db3d7ee85e3ffb217611cac1c7813acea4159"
+  },
+  {
+    "url": "https://files.pythonhosted.org/packages/07/6c/aa3f2f849e01cb6a001cd8554a88d4c77c5c1a31c95bdf1cf9301e6d9ef4/defusedxml-0.7.1-py2.py3-none-any.whl",
+    "sha256": "a352e7e428770286cc899e2542b6cdaedb2b4953ff269a210103ec58f6198a61"
+  },
+  {
+    "url": "https://files.pythonhosted.org/packages/37/1c/dc626b1b0e477546c8e80d8cb028442ef4602af276c405f7a5ccc85b0b5a/dissect_cstruct-4.7-py3-none-any.whl",
+    "sha256": "0427621ce67baa3106df2dc63a320d0a7f5c2da88ba3faf2ef5886a1a6b458fd"
+  },
+  {
+    "url": "https://files.pythonhosted.org/packages/04/31/8172bbea01a03beee2cacee67dec6d8da1ee909562b47d2ac197890bf71a/dissect_evidence-3.13-py3-none-any.whl",
+    "sha256": "a7aaa0823870a5678e5ee5a5e8ba08ed1cb3c480b789754fb74e8d3b86fa600e"
+  },
+  {
+    "url": "https://files.pythonhosted.org/packages/3c/0a/35644fb4b9597a5c4e685ff669b1cedbbda46c625866aafac75dabbfd0f7/dissect_fve-4.6-cp310-abi3-win_amd64.whl",
+    "sha256": "f85fd8724f3e6bb4ca3796664b3fd6a8ce7316170909e9b87ab764b211f71f34"
+  },
+  {
+    "url": "https://files.pythonhosted.org/packages/01/f2/4632ea424eda34e1a67d70718e3bc8dcbe45c0af16e8dd8e4724c2d41812/dissect_hypervisor-3.21-py3-none-any.whl",
+    "sha256": "fd845a3e7bc20efca575d4cfbb49a21ca53e8d89efb8afeec180de8a6b62fd2f"
+  },
+  {
+    "url": "https://files.pythonhosted.org/packages/66/a8/81f69a3e0ec60b7f229d395e4068df355fb770f5e952d83162836a5f9aea/dissect_util-3.24-cp310-abi3-win_amd64.whl",
+    "sha256": "5bc368d495afeb867b8bf5711f752bd023ae22334b474b375f5ac9a326fea89c"
+  },
+  {
+    "url": "https://files.pythonhosted.org/packages/e9/23/a640c2faa2e1e02bd791cbbeb3ead0a180261d488d59f35b2634e1d54947/dissect_volume-3.18-py3-none-any.whl",
+    "sha256": "f8f321adccacbd948c503cf14a14d4a6626d1b86ddcbe55c532b59caad833d79"
+  },
+  {
+    "url": "https://files.pythonhosted.org/packages/54/2f/e97a1b8294db0daaa87012c24a7bb714147c7ade7656973fd6c736b484ff/pycryptodome-3.23.0-cp37-abi3-win_amd64.whl",
+    "sha256": "c75b52aacc6c0c260f204cbdd834f76edc9fb0d8e0da9fbf8352ef58202564e2"
+  }
+]

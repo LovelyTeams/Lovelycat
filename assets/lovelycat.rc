@@ -1,0 +1,2 @@
+// GPUI loads icon group 1 for its native Windows window class.
+1 ICON "assets/lovelycat.ico"
