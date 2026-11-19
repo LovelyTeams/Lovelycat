@@ -38,3 +38,6 @@ debug = 0
 strip = "symbols"
 lto = "thin"
 codegen-units = 1
+
+[patch.crates-io]
+xattr = { path = "patches/xattr" }
