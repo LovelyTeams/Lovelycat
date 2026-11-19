@@ -7,6 +7,7 @@ mod hashcat;
 mod process;
 mod protected;
 mod ui;
+mod updater;
 
 use gpui::{
     AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size,
@@ -41,7 +42,11 @@ fn main() {
                     traffic_light_position: None,
                 }),
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_background: gpui::WindowBackgroundAppearance::Transparent,
+                window_background: if cfg!(windows) {
+                    gpui::WindowBackgroundAppearance::Transparent
+                } else {
+                    gpui::WindowBackgroundAppearance::Opaque
+                },
                 window_min_size: Some(size(px(720.), px(520.))),
                 ..Default::default()
             },

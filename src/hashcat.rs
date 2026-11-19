@@ -238,10 +238,29 @@ struct Settings {
 }
 
 pub fn data_dir() -> PathBuf {
-    env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir)
-        .join("Lovelycat")
+    #[cfg(windows)]
+    {
+        env::var_os("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(env::temp_dir)
+            .join("Lovelycat")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Application Support/Lovelycat"))
+            .unwrap_or_else(|| env::temp_dir().join("Lovelycat"))
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    {
+        if let Some(xdg) = env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+            PathBuf::from(xdg).join("lovelycat")
+        } else if let Some(home) = env::var_os("HOME").filter(|v| !v.is_empty()) {
+            PathBuf::from(home).join(".local/share/lovelycat")
+        } else {
+            env::temp_dir().join("lovelycat")
+        }
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -302,7 +321,16 @@ pub fn locate(data: &Path) -> Option<PathBuf> {
     }
 
     let cwd = env::current_dir().ok();
-    let downloaded = data.join("resources/hashcat-8.0.0/hashcat.exe");
+    let candidates: &[&str] = if cfg!(windows) {
+        &["hashcat-8.0.0/hashcat.exe", "hashcat.exe"]
+    } else {
+        &["hashcat-8.0.0/hashcat.bin", "hashcat.bin", "hashcat"]
+    };
+    let downloaded = if cfg!(windows) {
+        data.join("resources/hashcat-8.0.0/hashcat.exe")
+    } else {
+        data.join("resources/hashcat-8.0.0/hashcat.bin")
+    };
     if downloaded.is_file() {
         return Some(downloaded);
     }
@@ -314,7 +342,7 @@ pub fn locate(data: &Path) -> Option<PathBuf> {
             .flat_map(|path| path.ancestors().take(4)),
     );
     for dir in search_dirs {
-        for relative in ["hashcat-8.0.0/hashcat.exe", "hashcat.exe"] {
+        for relative in candidates {
             let path = dir.join(relative);
             if path.is_file() {
                 return Some(path);
@@ -322,12 +350,31 @@ pub fn locate(data: &Path) -> Option<PathBuf> {
         }
     }
 
-    env::var_os("PATH").and_then(|path| {
+    let bin_name = if cfg!(windows) {
+        "hashcat.exe"
+    } else {
+        "hashcat"
+    };
+    if let Some(found) = env::var_os("PATH").and_then(|path| {
         env::split_paths(&path)
             .filter(|dir| dir.is_absolute())
-            .map(|dir| dir.join("hashcat.exe"))
+            .map(|dir| dir.join(bin_name))
             .find(|exe| exe.is_file())
-    })
+    }) {
+        return Some(found);
+    }
+    #[cfg(not(windows))]
+    for fallback in [
+        "/opt/homebrew/bin/hashcat",
+        "/usr/local/bin/hashcat",
+        "/usr/bin/hashcat",
+    ] {
+        let path = PathBuf::from(fallback);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 pub fn save_executable(data: &Path, executable: PathBuf) -> io::Result<()> {

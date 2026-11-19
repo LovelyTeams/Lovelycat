@@ -15,7 +15,9 @@ use gpui_component::{
     select::Select,
 };
 
-use super::{DeviceQuery, Extraction, FileSlot, Notice, Page, Phase, Source, Workbench, hashcat};
+use super::{
+    DeviceQuery, Extraction, FileSlot, Notice, Page, Phase, Source, UpdateState, Workbench, hashcat,
+};
 
 use super::palette::{Palette, colors, theme_name, theme_swatch};
 use crate::desktop::{Appearance, CAT_EAR_HEIGHT, Outline};
@@ -226,6 +228,44 @@ impl Workbench {
                     .items_center()
                     .gap(px(4.))
                     .flex_shrink_0()
+                    .when_some(
+                        match &self.update {
+                            UpdateState::Available(r) => Some(format!("v{}", r.version)),
+                            UpdateState::Ready(p) => Some(format!("重启至 v{}", p.version)),
+                            _ => None,
+                        },
+                        |row, label| {
+                            row.child(
+                                button("toolbar-update-badge", cx)
+                                    .custom(variant(
+                                        cx,
+                                        colors.success_fill,
+                                        colors.success,
+                                        colors.border,
+                                        colors.selection,
+                                    ))
+                                    .h(px(34.))
+                                    .px(px(10.))
+                                    .gap(px(6.))
+                                    .tooltip("发现 GitHub 新版本，点击前往设置页更新")
+                                    .child(dot(colors.success))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(rgb(colors.success))
+                                            .child(if compact {
+                                                "更新".to_owned()
+                                            } else {
+                                                format!("新版本 {label}")
+                                            }),
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.change_page(Page::Settings, cx)
+                                    })),
+                            )
+                        },
+                    )
                     .child(if !compact {
                         button("engine-status", cx)
                             .h(px(34.))
@@ -2540,7 +2580,11 @@ impl Workbench {
                         "engine-location",
                         self.executable.as_deref(),
                         FileSlot::Executable,
-                        "选择 Hashcat 8 的 hashcat.exe",
+                        if cfg!(windows) {
+                            "选择 Hashcat 8 的 hashcat.exe"
+                        } else {
+                            "选择 Hashcat 可执行文件"
+                        },
                         cx,
                     ))
                     .when_some(self.executable.as_ref(), |this, path| {
@@ -2614,6 +2658,7 @@ impl Workbench {
                     .pb(px(24.))
                     .child(row1)
                     .child(row2)
+                    .child(self.update_panel(cx))
                     .child(
                         panel(colors)
                             .flex_shrink_0()

@@ -16,12 +16,16 @@ pub enum Resource {
 impl Resource {
     pub fn installed(self, data: &Path) -> PathBuf {
         match self {
-            Self::Hashcat => data.join("resources/hashcat-8.0.0/hashcat.exe"),
+            Self::Hashcat if cfg!(windows) => data.join("resources/hashcat-8.0.0/hashcat.exe"),
+            Self::Hashcat => data.join("resources/hashcat-8.0.0/hashcat.bin"),
             Self::RockYou => data.join("resources/rockyou/rockyou.txt"),
         }
     }
 
     pub fn install(self, data: &Path) -> Result<PathBuf, String> {
+        if self == Self::Hashcat && cfg!(target_os = "macos") {
+            return Err("macOS 请通过 Homebrew（brew install hashcat）安装后在上方选择可执行文件。".into());
+        }
         let installed = self.installed(data);
         if installed.is_file() {
             return Ok(installed);
@@ -46,8 +50,18 @@ impl Resource {
                 sevenz_rust2::decompress_file(&archive, stage.path())
                     .map_err(|e| format!("解压 Hashcat 失败（{e}）"))?;
                 let dir = stage.path().join("hashcat-8.0.0");
-                if !dir.join("hashcat.exe").is_file() || !dir.join("modules").is_dir() {
+                let binary = if cfg!(windows) {
+                    dir.join("hashcat.exe")
+                } else {
+                    dir.join("hashcat.bin")
+                };
+                if !binary.is_file() || !dir.join("modules").is_dir() {
                     return Err("发行包缺少 Hashcat 程序或模块。".into());
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&binary, fs::Permissions::from_mode(0o755));
                 }
                 dir
             }
@@ -74,10 +88,14 @@ impl Resource {
 }
 
 pub(crate) fn download(url: &str, digest: &str, archive: &Path) -> Result<(), String> {
-    let curl = env::var_os("SystemRoot")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
-        .join("System32/curl.exe");
+    let curl = if cfg!(windows) {
+        env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("System32/curl.exe")
+    } else {
+        PathBuf::from("curl")
+    };
     let mut cmd = Command::new(curl);
     #[cfg(windows)]
     {

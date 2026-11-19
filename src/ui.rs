@@ -30,6 +30,7 @@ use crate::hashcat::{
 };
 use crate::process::Cancel;
 use crate::protected::{self, Extracted};
+use crate::updater::{self, ApplyAction, CheckOutcome, PreparedUpdate, ReleaseInfo};
 
 const LOG_LIMIT: usize = 400;
 
@@ -86,7 +87,13 @@ impl FileSlot {
             Self::OperandDirectory | Self::ArgumentDirectory => "添加目录路径",
             Self::Stdin => "选择标准输入文件",
             Self::ResultsDirectory => "选择恢复结果目录",
-            Self::Executable => "选择 hashcat.exe",
+            Self::Executable => {
+                if cfg!(windows) {
+                    "选择 hashcat.exe"
+                } else {
+                    "选择 hashcat 可执行文件"
+                }
+            }
         }
     }
 }
@@ -122,6 +129,17 @@ enum DeviceQuery {
     Idle,
     Pending,
     Ready(hashcat::DeviceReport),
+    Failed(String),
+}
+
+enum UpdateState {
+    Idle,
+    Checking,
+    UpToDate,
+    NoRelease,
+    Available(ReleaseInfo),
+    Downloading(ReleaseInfo),
+    Ready(PreparedUpdate),
     Failed(String),
 }
 
@@ -178,6 +196,7 @@ pub struct Workbench {
     locations: hashcat::ResultLocations,
     download: Option<crate::downloads::Resource>,
     download_note: Option<Notice>,
+    update: UpdateState,
     helpers: helpers::QuickSetup,
     forensics: forensics::Forensics,
     appearance_error: Option<String>,
@@ -274,6 +293,7 @@ impl Workbench {
             locations: hashcat::ResultLocations::load(&data),
             download: None,
             download_note: None,
+            update: UpdateState::Idle,
             helpers: helpers::QuickSetup::new(window, cx),
             forensics: forensics::Forensics::new(&data, window, cx),
             data,
@@ -350,7 +370,86 @@ impl Workbench {
         if let Some(executable) = hashcat::locate(&this.data) {
             this.connect(executable, false, window, cx);
         }
+        #[cfg(not(test))]
+        this.check_for_updates(false, window, cx);
         this
+    }
+
+    fn check_for_updates(&mut self, interactive: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(
+            self.update,
+            UpdateState::Checking | UpdateState::Downloading(_)
+        ) {
+            return;
+        }
+        if interactive {
+            self.update = UpdateState::Checking;
+            cx.notify();
+        }
+        let task = cx.background_spawn(async move { updater::check_latest() });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update_in(cx, |this, _, cx| {
+                match result {
+                    Ok(CheckOutcome::Available(info)) => {
+                        this.update = UpdateState::Available(info);
+                    }
+                    Ok(CheckOutcome::UpToDate) => {
+                        if interactive {
+                            this.update = UpdateState::UpToDate;
+                        }
+                    }
+                    Ok(CheckOutcome::NoRelease) => {
+                        if interactive {
+                            this.update = UpdateState::NoRelease;
+                        }
+                    }
+                    Err(error) => {
+                        if interactive {
+                            this.update = UpdateState::Failed(error);
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn download_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let UpdateState::Available(release) = &self.update else {
+            return;
+        };
+        let release = release.clone();
+        self.update = UpdateState::Downloading(release.clone());
+        let data = self.data.clone();
+        let task = cx.background_spawn(async move { updater::download_update(&release, &data) });
+        cx.spawn_in(window, async move |weak, cx| {
+            let result = task.await;
+            let _ = weak.update_in(cx, |this, _, cx| {
+                this.update = match result {
+                    Ok(prepared) => UpdateState::Ready(prepared),
+                    Err(error) => UpdateState::Failed(error),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn apply_update(&mut self, cx: &mut Context<Self>) {
+        let UpdateState::Ready(prepared) = &self.update else {
+            return;
+        };
+        match updater::apply_and_restart(prepared) {
+            Ok(ApplyAction::QuitToRestart) => cx.quit(),
+            Ok(ApplyAction::RevealPath(path)) => cx.reveal_path(&path),
+            Err(error) => {
+                self.update = UpdateState::Failed(error);
+                cx.notify();
+            }
+        }
     }
 
     fn queue_outline(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -603,14 +702,21 @@ impl Workbench {
             FileSlot::Stdin => self.tools.stdin = Some(path),
             FileSlot::ResultsDirectory => self.change_results_directory(path, cx),
             FileSlot::Executable => {
-                if path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
-                {
+                let valid = if cfg!(windows) {
+                    path.extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+                } else {
+                    path.is_file()
+                };
+                if valid {
                     self.connect(path, true, window, cx);
                 } else {
                     self.engine_notice = Some(Notice {
-                        text: "请选择 Hashcat 的 .exe 文件。".into(),
+                        text: if cfg!(windows) {
+                            "请选择 Hashcat 的 .exe 文件。".into()
+                        } else {
+                            "请选择有效的 Hashcat 可执行文件。".into()
+                        },
                         error: true,
                     });
                 }

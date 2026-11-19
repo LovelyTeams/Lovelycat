@@ -1,10 +1,11 @@
-use super::layout::{button, panel, section_title};
+use super::layout::{button, panel, primary, section_title};
 use super::palette::colors;
-use super::{FileSlot, Notice, Page, Workbench};
+use super::{FileSlot, Notice, Page, UpdateState, Workbench};
 use crate::downloads::Resource;
+use crate::updater;
 use gpui::{
-    AppContext, Context, Div, FontWeight, ParentElement, Styled, Window, div,
-    prelude::FluentBuilder, px, rgb,
+    AnyElement, AppContext, Context, Div, FontWeight, IntoElement, ParentElement, Styled, Window,
+    div, prelude::FluentBuilder, px, rgb,
 };
 use gpui_component::{Disableable, Icon, IconName};
 use std::path::PathBuf;
@@ -178,7 +179,11 @@ impl Workbench {
                                 Resource::Hashcat,
                                 "hashcat",
                                 "Hashcat 8.0.0",
-                                "官方 Windows 发行包",
+                                if cfg!(target_os = "macos") {
+                                    "macOS 请通过 brew install hashcat 安装"
+                                } else {
+                                    "官方发行包（含 Windows / Linux）"
+                                },
                             ),
                             (
                                 Resource::RockYou,
@@ -286,6 +291,372 @@ impl Workbench {
                         )
                     }),
             )
+    }
+
+    pub(super) fn update_panel(&self, cx: &mut Context<Self>) -> Div {
+        let c = colors(cx);
+        let checking = matches!(self.update, UpdateState::Checking);
+        let downloading = matches!(self.update, UpdateState::Downloading(_));
+        let repo_url = format!("https://github.com/{}/releases", updater::REPO);
+
+        let body: AnyElement = match &self.update {
+            UpdateState::Idle => div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(12.))
+                .p(px(12.))
+                .rounded(px(8.))
+                .bg(rgb(c.monitor))
+                .border_1()
+                .border_color(rgb(c.subtle_border))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(rgb(c.muted))
+                        .child(format!(
+                            "当前版本 v{}，启动时自动从 GitHub ({}) 检查新版本。",
+                            updater::CURRENT_VERSION,
+                            updater::REPO
+                        )),
+                )
+                .into_any_element(),
+            UpdateState::Checking => div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .p(px(12.))
+                .rounded(px(8.))
+                .bg(rgb(c.monitor))
+                .text_size(px(13.))
+                .text_color(rgb(c.muted))
+                .child(
+                    Icon::new(IconName::LoaderCircle)
+                        .size(px(15.))
+                        .text_color(rgb(c.muted)),
+                )
+                .child("正在连接 GitHub 检查最新版本…")
+                .into_any_element(),
+            UpdateState::UpToDate => div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(12.))
+                .py(px(10.))
+                .rounded(px(8.))
+                .bg(rgb(c.success_fill))
+                .text_size(px(13.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(c.success))
+                .child(
+                    Icon::new(IconName::CircleCheck)
+                        .size(px(15.))
+                        .text_color(rgb(c.success)),
+                )
+                .child(format!(
+                    "当前已是最新版本（v{}）",
+                    updater::CURRENT_VERSION
+                ))
+                .into_any_element(),
+            UpdateState::NoRelease => div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(12.))
+                .py(px(10.))
+                .rounded(px(8.))
+                .bg(rgb(c.monitor))
+                .border_1()
+                .border_color(rgb(c.subtle_border))
+                .text_size(px(13.))
+                .text_color(rgb(c.muted))
+                .child(
+                    Icon::new(IconName::Info)
+                        .size(px(15.))
+                        .text_color(rgb(c.muted)),
+                )
+                .child(format!(
+                    "GitHub 仓库尚未发布正式 Release（当前版本 v{}）。",
+                    updater::CURRENT_VERSION
+                ))
+                .into_any_element(),
+            UpdateState::Available(release) => {
+                let html_url = release.html_url.clone();
+                let asset_info = release.asset.as_ref().map(|a| {
+                    if a.size > 0 {
+                        format!("{} · {}", a.name, updater::format_size(a.size))
+                    } else {
+                        a.name.clone()
+                    }
+                });
+                let has_asset = release.asset.is_some();
+                let notes_preview = release
+                    .notes
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                    .take(4)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .p(px(14.))
+                    .rounded(px(9.))
+                    .bg(rgb(c.selection))
+                    .border_1()
+                    .border_color(rgb(c.selection_border))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .flex_wrap()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .px(px(8.))
+                                            .py(px(2.))
+                                            .rounded_full()
+                                            .bg(rgb(c.accent))
+                                            .font_family("Cascadia Mono")
+                                            .text_size(px(12.))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(rgb(c.accent_ink))
+                                            .child(format!("发现新版本 v{}", release.version)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(13.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .child(release.title.clone()),
+                                    ),
+                            )
+                            .when_some(asset_info, |row, info| {
+                                row.child(
+                                    div()
+                                        .font_family("Cascadia Mono")
+                                        .text_size(px(11.5))
+                                        .text_color(rgb(c.muted))
+                                        .child(info),
+                                )
+                            }),
+                    )
+                    .when(!notes_preview.is_empty(), |card| {
+                        card.child(
+                            div()
+                                .p(px(10.))
+                                .rounded(px(7.))
+                                .bg(rgb(c.panel))
+                                .border_1()
+                                .border_color(rgb(c.subtle_border))
+                                .text_size(px(12.5))
+                                .line_height(px(19.))
+                                .text_color(rgb(c.muted))
+                                .child(notes_preview),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(px(8.))
+                            .when(has_asset, |row| {
+                                row.child(
+                                    primary("download-app-update", cx)
+                                        .h(px(34.))
+                                        .px(px(14.))
+                                        .gap(px(6.))
+                                        .label("下载并更新")
+                                        .disabled(self.cancel.is_some())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.download_update(window, cx)
+                                        })),
+                                )
+                            })
+                            .child(
+                                button("open-release-page", cx)
+                                    .h(px(34.))
+                                    .px(px(12.))
+                                    .gap(px(5.))
+                                    .child(
+                                        Icon::new(IconName::ExternalLink)
+                                            .size(px(13.))
+                                            .text_color(rgb(c.muted)),
+                                    )
+                                    .child("在 GitHub 查看")
+                                    .on_click(move |_, _, cx| cx.open_url(&html_url)),
+                            ),
+                    )
+                    .into_any_element()
+            }
+            UpdateState::Downloading(release) => div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .p(px(12.))
+                .rounded(px(8.))
+                .bg(rgb(c.selection))
+                .border_1()
+                .border_color(rgb(c.selection_border))
+                .text_size(px(13.))
+                .text_color(rgb(c.ink))
+                .child(
+                    Icon::new(IconName::LoaderCircle)
+                        .size(px(15.))
+                        .text_color(rgb(c.ink)),
+                )
+                .child(format!(
+                    "正在从 GitHub 下载并校验 Lovelycat v{}…",
+                    release.version
+                ))
+                .into_any_element(),
+            UpdateState::Ready(prepared) => {
+                let can_restart = !cfg!(target_os = "macos") && prepared.binary_path.is_some();
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .flex_wrap()
+                    .gap(px(10.))
+                    .p(px(12.))
+                    .rounded(px(8.))
+                    .bg(rgb(c.success_fill))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(c.success))
+                            .child(
+                                Icon::new(IconName::CircleCheck)
+                                    .size(px(16.))
+                                    .text_color(rgb(c.success)),
+                            )
+                            .child(format!(
+                                "新版本 v{} 已下载并校验完成",
+                                prepared.version
+                            )),
+                    )
+                    .child(
+                        primary("apply-app-update", cx)
+                            .h(px(34.))
+                            .px(px(14.))
+                            .label(if can_restart {
+                                "立即重启更新"
+                            } else {
+                                "打开安装包目录"
+                            })
+                            .disabled(self.cancel.is_some())
+                            .on_click(cx.listener(|this, _, _, cx| this.apply_update(cx))),
+                    )
+                    .into_any_element()
+            }
+            UpdateState::Failed(error) => div()
+                .flex()
+                .items_center()
+                .gap(px(7.))
+                .px(px(12.))
+                .py(px(9.))
+                .rounded(px(8.))
+                .bg(rgb(c.error_fill))
+                .text_size(px(12.5))
+                .text_color(rgb(c.error))
+                .child(
+                    Icon::new(IconName::TriangleAlert)
+                        .size(px(14.))
+                        .text_color(rgb(c.error)),
+                )
+                .child(error.clone())
+                .into_any_element(),
+        };
+
+        panel(c)
+            .flex_shrink_0()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(10.))
+                    .h(px(48.))
+                    .px(px(18.))
+                    .flex_shrink_0()
+                    .border_b_1()
+                    .border_color(rgb(c.subtle_border))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                Icon::new(IconName::GitHub)
+                                    .size(px(16.))
+                                    .text_color(rgb(c.success)),
+                            )
+                            .child(section_title("版本更新"))
+                            .child(
+                                div()
+                                    .px(px(8.))
+                                    .py(px(2.))
+                                    .rounded_full()
+                                    .bg(rgb(c.raised))
+                                    .font_family("Cascadia Mono")
+                                    .text_size(px(11.5))
+                                    .text_color(rgb(c.muted))
+                                    .child(format!("v{}", updater::CURRENT_VERSION)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .child(
+                                button("open-github-releases", cx)
+                                    .h(px(30.))
+                                    .px(px(9.))
+                                    .gap(px(5.))
+                                    .child(
+                                        Icon::new(IconName::ExternalLink)
+                                            .size(px(13.))
+                                            .text_color(rgb(c.muted)),
+                                    )
+                                    .child("发布页")
+                                    .tooltip("在浏览器中打开 GitHub Releases 页面")
+                                    .on_click(move |_, _, cx| cx.open_url(&repo_url)),
+                            )
+                            .child(
+                                button("check-app-update", cx)
+                                    .h(px(30.))
+                                    .px(px(10.))
+                                    .gap(px(5.))
+                                    .child(
+                                        Icon::new(IconName::Redo2)
+                                            .size(px(13.))
+                                            .text_color(rgb(c.success)),
+                                    )
+                                    .child(if checking {
+                                        "检查中…"
+                                    } else {
+                                        "检查更新"
+                                    })
+                                    .disabled(checking || downloading)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.check_for_updates(true, window, cx)
+                                    })),
+                            ),
+                    ),
+            )
+            .child(div().p(px(18.)).child(body))
     }
 
     fn get_resource(&mut self, resource: Resource, window: &mut Window, cx: &mut Context<Self>) {
