@@ -579,6 +579,7 @@ fn run(
             },
         );
     };
+    let mut diagnostic: Option<String> = None;
     let exit = execute(&mut cmd, Some(stop), None, |line| {
         let event = if line.starts_with('{') {
             match serde_json::from_str::<Status>(&line) {
@@ -593,6 +594,9 @@ fn run(
         } else if line.starts_with("[s]tatus") {
             return;
         } else {
+            if diagnostic.is_none() {
+                diagnostic = diagnose_log_line(&line, request.username, request.mode);
+            }
             RunEvent::Log(line)
         };
         let _ = events.send_blocking(event);
@@ -608,11 +612,257 @@ fn run(
         Exit::Finished(status) => match status.code() {
             Some(0) => Ok(Outcome::Recovered),
             Some(1) => Ok(Outcome::Exhausted),
-            code => Err(format!(
-                "Hashcat 退出（代码 {}），请查看运行日志。",
-                code.map_or_else(|| "未知".into(), |code| code.to_string())
-            )),
+            code => Err(diagnostic.unwrap_or_else(|| {
+                format!(
+                    "Hashcat 退出（代码 {}），请查看运行日志。",
+                    code.map_or_else(|| "未知".into(), |code| code.to_string())
+                )
+            })),
         },
+    }
+}
+
+pub fn mode_embeds_username(mode: u32) -> bool {
+    matches!(
+        mode,
+        5300 | 5500
+            | 5600
+            | 7500
+            | 13100
+            | 18200
+            | 19600
+            | 19700
+            | 19800
+            | 19900
+            | 27000
+            | 27100
+    )
+}
+
+fn diagnose_log_line(line: &str, username: bool, mode: Option<u32>) -> Option<String> {
+    if line.contains("Token length exception") {
+        return Some(if username {
+            "哈希解析失败（Token length exception）：已启用「输入含用户名」，若为 NetNTLMv2 等自带用户名的格式，请取消勾选后重试。".into()
+        } else {
+            "哈希解析失败（Token length exception）：哈希字段长度与所选哈希类型不匹配，请核对算法或输入格式。".into()
+        });
+    }
+    if line.contains("Separator unmatched") {
+        return Some(if username {
+            "哈希解析失败（Separator unmatched）：缺少预期的分隔符，请检查哈希类型或取消勾选「输入含用户名」。".into()
+        } else {
+            "哈希解析失败（Separator unmatched）：哈希格式与所选类型不匹配，请检查算法或输入内容。".into()
+        });
+    }
+    if line.contains("Signature unmatched") {
+        return Some(if username {
+            "哈希签名不匹配（Signature unmatched）：请确认哈希类型正确，若原哈希已自带用户名请取消勾选「输入含用户名」。".into()
+        } else {
+            "哈希签名不匹配（Signature unmatched）：所选哈希类型与输入的前缀标识不符。".into()
+        });
+    }
+    if line.contains("Line-length exception") {
+        return Some("哈希长度不匹配（Line-length exception）：请核对所选哈希类型与粘贴内容是否完整。".into());
+    }
+    if line.trim() == "No hashes loaded." {
+        return Some(if username && mode.is_some_and(mode_embeds_username) {
+            "未加载到有效哈希：当前算法格式本身已包含用户名，请取消勾选「输入含用户名」后重试。".into()
+        } else {
+            "未加载到有效哈希，请核对哈希类型或输入格式，详情见下方运行日志。".into()
+        });
+    }
+    None
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceReport {
+    pub raw: String,
+    pub backends: Vec<DeviceBackend>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceBackend {
+    pub name: String,
+    pub detail: String,
+    pub devices: Vec<ComputeDevice>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ComputeDevice {
+    pub id: String,
+    pub alias: Option<String>,
+    pub device_type: String,
+    pub name: String,
+    pub vendor: Option<String>,
+    pub processors: Option<String>,
+    pub preferred_threads: Option<String>,
+    pub clock_mhz: Option<String>,
+    pub memory_total_mb: Option<u64>,
+    pub memory_free_mb: Option<u64>,
+    pub memory_note: Option<String>,
+    pub local_memory: Option<String>,
+    pub cache_size: Option<String>,
+    pub driver: Option<String>,
+    pub pci: Option<String>,
+}
+
+pub fn parse_devices(raw: &str) -> DeviceReport {
+    let mut backends: Vec<DeviceBackend> = Vec::new();
+    let mut current_backend: Option<DeviceBackend> = None;
+    let mut current_device: Option<ComputeDevice> = None;
+    let mut platform_vendor: Option<String> = None;
+    let mut platform_version: Option<String> = None;
+
+    let flush_device = |backend: &mut Option<DeviceBackend>, device: &mut Option<ComputeDevice>| {
+        if let (Some(b), Some(mut d)) = (backend.as_mut(), device.take()) {
+            if d.device_type.is_empty() {
+                d.device_type = if matches!(b.name.as_str(), "CUDA" | "HIP" | "Metal") {
+                    "GPU".into()
+                } else {
+                    "设备".into()
+                };
+            }
+            if !d.name.is_empty() || !d.id.is_empty() {
+                b.devices.push(d);
+            }
+        }
+    };
+
+    let flush_backend = |backends: &mut Vec<DeviceBackend>,
+                         backend: &mut Option<DeviceBackend>,
+                         device: &mut Option<ComputeDevice>| {
+        flush_device(backend, device);
+        if let Some(b) = backend.take()
+            && !b.devices.is_empty()
+        {
+            backends.push(b);
+        }
+    };
+
+    for raw_line in raw.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.chars().all(|c| c == '=' || c == '-') {
+            continue;
+        }
+        if let Some(section) = line.strip_suffix(" Info:") {
+            flush_backend(&mut backends, &mut current_backend, &mut current_device);
+            platform_vendor = None;
+            platform_version = None;
+            current_backend = Some(DeviceBackend {
+                name: section.trim().to_owned(),
+                detail: String::new(),
+                devices: Vec::new(),
+            });
+            continue;
+        }
+        if line.starts_with("OpenCL Platform ID") {
+            flush_device(&mut current_backend, &mut current_device);
+            platform_vendor = None;
+            platform_version = None;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("Backend Device ID ") {
+            flush_device(&mut current_backend, &mut current_device);
+            if current_backend.is_none() {
+                current_backend = Some(DeviceBackend {
+                    name: "计算后端".into(),
+                    detail: String::new(),
+                    devices: Vec::new(),
+                });
+            }
+            let (id, alias) = if let Some((left, right)) = rest.split_once("(Alias:") {
+                (
+                    left.trim().to_owned(),
+                    Some(right.trim().trim_end_matches(')').trim().to_owned()),
+                )
+            } else {
+                (rest.trim().to_owned(), None)
+            };
+            current_device = Some(ComputeDevice {
+                id,
+                alias,
+                ..Default::default()
+            });
+            continue;
+        }
+
+        let Some((raw_key, raw_val)) = line.split_once(':') else {
+            continue;
+        };
+        let key = raw_key.trim().trim_end_matches('.');
+        let val = raw_val.trim();
+        if val.is_empty() {
+            continue;
+        }
+
+        if let Some(dev) = current_device.as_mut() {
+            match key {
+                "Type" => dev.device_type = val.to_owned(),
+                "Vendor" => dev.vendor = Some(val.to_owned()),
+                "Name" => dev.name = val.to_owned(),
+                "Processor(s)" => dev.processors = Some(val.to_owned()),
+                "Preferred.Thrd" => dev.preferred_threads = Some(val.to_owned()),
+                "Clock" => dev.clock_mhz = Some(val.to_owned()),
+                "Memory.Total" => {
+                    dev.memory_total_mb = parse_megabytes(val);
+                    if let Some((_, note)) = val.split_once('(') {
+                        let note = note.trim().trim_end_matches(')').trim();
+                        if let Some(limit) = note.strip_prefix("limited to ") {
+                            let limit = limit
+                                .strip_suffix(" allocatable in one block")
+                                .unwrap_or(limit);
+                            dev.memory_note = Some(format!("单块上限 {limit}"));
+                        }
+                    }
+                }
+                "Memory.Free" => dev.memory_free_mb = parse_megabytes(val),
+                "Local.Memory" => dev.local_memory = Some(val.to_owned()),
+                "Cache.Size" => dev.cache_size = Some(val.to_owned()),
+                "Driver.Version" => dev.driver = Some(val.to_owned()),
+                "PCI.Addr.BDFe" | "PCI.Addr.BDF" => dev.pci = Some(val.to_owned()),
+                _ => {}
+            }
+        } else if let Some(backend) = current_backend.as_mut() {
+            match key {
+                "CUDA.Version" => backend.detail = format!("CUDA {val}"),
+                "HIP.Version" => backend.detail = format!("HIP {val}"),
+                "Metal.Version" => backend.detail = format!("Metal {val}"),
+                "Vendor" => {
+                    platform_vendor = Some(val.to_owned());
+                    backend.detail = join_platform_detail(&platform_vendor, &platform_version);
+                }
+                "Version" => {
+                    platform_version = Some(val.to_owned());
+                    backend.detail = join_platform_detail(&platform_vendor, &platform_version);
+                }
+                _ => {}
+            }
+        }
+    }
+    flush_backend(&mut backends, &mut current_backend, &mut current_device);
+
+    DeviceReport {
+        raw: raw.to_owned(),
+        backends,
+    }
+}
+
+fn join_platform_detail(vendor: &Option<String>, version: &Option<String>) -> String {
+    match (vendor, version) {
+        (Some(v), Some(ver)) => format!("{v} · {ver}"),
+        (Some(v), None) => v.clone(),
+        (None, Some(ver)) => ver.clone(),
+        (None, None) => String::new(),
+    }
+}
+
+fn parse_megabytes(text: &str) -> Option<u64> {
+    let mut parts = text.split_whitespace();
+    let num: u64 = parts.next()?.parse().ok()?;
+    match parts.next().map(str::to_ascii_uppercase).as_deref() {
+        Some("GB") | Some("GIB") => Some(num.saturating_mul(1024)),
+        Some("KB") | Some("KIB") => Some(num / 1024),
+        _ => Some(num),
     }
 }
 
@@ -841,18 +1091,95 @@ fn pipe_lines(pipe: impl Read + Send + 'static, tx: mpsc::SyncSender<String>) {
             match reader.read_until(b'\n', &mut bytes) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    for line in String::from_utf8_lossy(&bytes)
+                    for chunk in String::from_utf8_lossy(&bytes)
                         .trim_end_matches(['\n', '\r'])
                         .split('\r')
                     {
-                        if !line.is_empty() && tx.send(line.to_owned()).is_err() {
-                            return;
+                        for line in split_hashcat_glued_line(chunk) {
+                            if !line.is_empty() && tx.send(line).is_err() {
+                                return;
+                            }
                         }
                     }
                 }
             }
         }
     });
+}
+
+fn split_hashcat_glued_line(input: &str) -> Vec<String> {
+    if input.is_empty() || input.starts_with('{') {
+        return vec![input.to_owned()];
+    }
+    let mut rest = input;
+    let mut out = Vec::new();
+
+    // Hashcat omits CR/LF between progress lines when stdout is piped (non-TTY).
+    // Peel off well-known progress/completion prefixes cleanly so log lines stay readable.
+    let progress_pairs = [
+        ("Initializing bridges. Please be patient...", "Initialized bridges"),
+        (
+            "Initializing backend runtimes. Please be patient...",
+            "Initialized backend runtimes",
+        ),
+        (
+            "Initializing backend devices. Please be patient...",
+            "Initialized backend devices",
+        ),
+        (
+            "Initializing device kernels and memory. Please be patient...",
+            "Initialized device kernels and memory",
+        ),
+    ];
+
+    loop {
+        let mut advanced = false;
+        for (start, done) in progress_pairs {
+            if let Some(after_start) = rest.strip_prefix(start) {
+                if let Some(after_done) = after_start.strip_prefix(done) {
+                    out.push(done.to_owned());
+                    rest = after_done;
+                    advanced = true;
+                    break;
+                }
+            } else if let Some(after_done) = rest.strip_prefix(done)
+                && !after_done.is_empty()
+            {
+                out.push(done.to_owned());
+                rest = after_done;
+                advanced = true;
+                break;
+            }
+        }
+        if advanced {
+            continue;
+        }
+        // Handle "Counting lines in <path>. Please be patient...Counted lines in <path><next>"
+        if let Some(after_counting) = rest.strip_prefix("Counting lines in ")
+            && let Some((path, tail)) = after_counting.split_once(". Please be patient...")
+        {
+            let counted = format!("Counted lines in {path}");
+            if let Some(after_counted) = tail.strip_prefix(&counted) {
+                out.push(counted);
+                rest = after_counted;
+                continue;
+            }
+        }
+        // Handle "Parsing Hashes: ...Started: ..."
+        if rest.starts_with("Parsing Hashes:")
+            && let Some(pos) = rest.find("Started:")
+        {
+            out.push(rest[..pos].trim_end().to_owned());
+            rest = &rest[pos..];
+            continue;
+        }
+        break;
+    }
+
+    if !rest.is_empty() {
+        out.push(rest.to_owned());
+    }
+    out
 }
 
 pub fn file_name(path: &Path) -> String {
@@ -924,5 +1251,73 @@ mod tests {
             assert_eq!(rows, ["plain:tail"])
         })
         .unwrap();
+    }
+
+    #[test]
+    fn parses_cuda_and_opencl_backend_devices() {
+        let sample = "\
+CUDA Info:
+==========
+CUDA.Version.: 13.3
+
+Backend Device ID #01 (Alias: #02)
+  Name...........: NVIDIA GeForce RTX 4060
+  Processor(s)...: 24
+  Preferred.Thrd.: 32
+  Clock..........: 2505
+  Memory.Total...: 8187 MB
+  Memory.Free....: 7106 MB
+  Local.Memory...: 99 KB
+  Cache.Size.....: 24 MB
+  PCI.Addr.BDFe..: 0000:01:00.0
+
+OpenCL Info:
+============
+OpenCL Platform ID #1
+  Vendor..: NVIDIA Corporation
+  Version.: OpenCL 3.0 CUDA 13.3.80
+
+  Backend Device ID #02 (Alias: #01)
+    Type...........: GPU
+    Name...........: NVIDIA GeForce RTX 4060
+    Memory.Total...: 8187 MB (limited to 2046 MB allocatable in one block)
+    Memory.Free....: 7106 MB
+    Driver.Version.: 610.88
+";
+        let report = parse_devices(sample);
+        assert_eq!(report.backends.len(), 2);
+        assert_eq!(report.backends[0].name, "CUDA");
+        assert_eq!(report.backends[0].detail, "CUDA 13.3");
+        let gpu = &report.backends[0].devices[0];
+        assert_eq!(gpu.id, "#01");
+        assert_eq!(gpu.alias.as_deref(), Some("#02"));
+        assert_eq!(gpu.name, "NVIDIA GeForce RTX 4060");
+        assert_eq!(gpu.memory_total_mb, Some(8187));
+        assert_eq!(gpu.memory_free_mb, Some(7106));
+        assert_eq!(
+            report.backends[1].devices[0].memory_note.as_deref(),
+            Some("单块上限 2046 MB")
+        );
+    }
+
+    #[test]
+    fn splits_non_tty_glued_hashcat_progress_lines() {
+        let glued = "Initializing bridges. Please be patient...Initialized bridgesInitializing backend runtimes. Please be patient...Initialized backend runtimesCUDA API (CUDA 13.3)";
+        assert_eq!(
+            split_hashcat_glued_line(glued),
+            vec![
+                "Initialized bridges",
+                "Initialized backend runtimes",
+                "CUDA API (CUDA 13.3)",
+            ]
+        );
+        let counting = "Counting lines in C:\\tmp\\h.txt. Please be patient...Counted lines in C:\\tmp\\h.txtHash parsing error in hashfile: bad";
+        assert_eq!(
+            split_hashcat_glued_line(counting),
+            vec![
+                "Counted lines in C:\\tmp\\h.txt",
+                "Hash parsing error in hashfile: bad",
+            ]
+        );
     }
 }

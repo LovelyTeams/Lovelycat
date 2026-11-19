@@ -11,11 +11,11 @@ use super::{
     palette::colors,
 };
 use gpui::{
-    AppContext, Context, Div, Entity, ParentElement, Styled, Window, div, prelude::FluentBuilder,
-    px, rgb,
+    AppContext, Context, Div, Entity, FontWeight, ParentElement, Styled, Window, div,
+    prelude::FluentBuilder, px, rgb,
 };
 use gpui_component::{
-    Disableable,
+    Disableable, Icon, IconName,
     input::{InputEvent, InputState},
 };
 
@@ -176,38 +176,44 @@ impl Workbench {
         }
     }
 
-    pub(super) fn quick_setup(&self, cx: &mut Context<Self>) -> Div {
+    pub(super) fn quick_setup_toggle(&self, cx: &mut Context<Self>) -> gpui_component::button::Button {
+        let c = colors(cx);
+        let label = match self.attack {
+            0 => "快速生成字典/规则",
+            1 => "组合快捷操作",
+            _ => "常用掩码模板",
+        };
+        let chevron = if self.helpers.expanded {
+            IconName::ChevronUp
+        } else {
+            IconName::ChevronDown
+        };
+        choice("toggle-helper", label, self.helpers.expanded, cx)
+            .h(px(28.))
+            .px(px(10.))
+            .gap(px(5.))
+            .child(Icon::new(chevron).size(px(13.)).text_color(rgb(c.muted)))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.helpers.expanded = !this.helpers.expanded;
+                cx.notify();
+            }))
+    }
+
+    pub(super) fn quick_setup_body(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.helpers.expanded {
+            return None;
+        }
         let c = colors(cx);
         let locked = self.form_locked() || self.picking;
-        let label = match self.attack {
-            0 => "生成字典或规则",
-            1 => "组合快捷配置",
-            _ => "掩码快捷配置",
-        };
-        let head = div().flex().items_center().child(
-            button("toggle-helper", cx)
-                .h(px(30.))
-                .px(px(9.))
-                .label(format!(
-                    "{} {label}",
-                    if self.helpers.expanded { "−" } else { "+" }
-                ))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.helpers.expanded = !this.helpers.expanded;
-                    cx.notify();
-                })),
-        );
-        let mut body = div()
+        let mut inner = div()
             .flex()
             .flex_col()
-            .gap(px(8.))
-            .border_t_1()
-            .border_color(rgb(c.border))
-            .pt(px(10.))
-            .child(head);
-        if !self.helpers.expanded {
-            return body;
-        }
+            .gap(px(10.))
+            .p(px(12.))
+            .rounded(px(9.))
+            .bg(rgb(c.panel))
+            .border_1()
+            .border_color(rgb(c.border));
         if self.attack == 0 {
             let generator = self.generator(cx);
             let mut preview = Vec::new();
@@ -220,63 +226,136 @@ impl Workbench {
                 rules.push(line.to_owned());
                 Ok(rules.len() < 5)
             });
-            body = body
-                .child(multiline(&self.helpers.seeds, 68.).disabled(locked))
-                .child(single_line(&self.helpers.suffixes).disabled(locked))
+            inner = inner
                 .child(
-                    div().flex().gap(px(6.)).children(
-                        [
-                            ("capitalize", "包含首字母大写", false, self.helpers.capital),
-                            ("uppercase", "包含全大写", true, self.helpers.upper),
-                        ]
-                        .into_iter()
-                        .map(|(id, text, upper, active)| {
-                            choice(id, text, active, cx)
-                                .h(px(30.))
-                                .disabled(locked)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if upper {
-                                        this.helpers.upper = !this.helpers.upper;
-                                    } else {
-                                        this.helpers.capital = !this.helpers.capital;
-                                    }
-                                    cx.notify();
-                                }))
-                        }),
-                    ),
+                    div()
+                        .flex()
+                        .gap(px(10.))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(multiline(&self.helpers.seeds, 76.).disabled(locked)),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w_0()
+                                .justify_between()
+                                .gap(px(6.))
+                                .child(single_line(&self.helpers.suffixes).disabled(locked))
+                                .child(
+                                    div().flex().flex_wrap().gap(px(6.)).children(
+                                        [
+                                            ("capitalize", "首字母大写", false, self.helpers.capital),
+                                            ("uppercase", "全大写", true, self.helpers.upper),
+                                        ]
+                                        .into_iter()
+                                        .map(|(id, text, upper, active)| {
+                                            choice(id, text, active, cx)
+                                                .h(px(30.))
+                                                .px(px(10.))
+                                                .disabled(locked)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if upper {
+                                                        this.helpers.upper = !this.helpers.upper;
+                                                    } else {
+                                                        this.helpers.capital =
+                                                            !this.helpers.capital;
+                                                    }
+                                                    cx.notify();
+                                                }))
+                                        }),
+                                    ),
+                                ),
+                        ),
                 )
-                .when(!preview.is_empty(), |this| {
-                    this.child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(rgb(c.muted))
-                            .child(format!("字典预览　{}", preview.join("  ·  "))),
-                    )
-                })
                 .child(
-                    div().text_size(px(13.)).text_color(rgb(c.muted)).child(
-                        rule_preview
-                            .map(|_| format!("规则预览　{}", rules.join("  ·  ")))
-                            .unwrap_or_else(|e| e),
-                    ),
-                )
-                .child(
-                    div().flex().gap(px(6.)).children(
-                        [
-                            ("save-words", "保存字典并使用", Artifact::Words),
-                            ("save-rules", "保存规则并使用", Artifact::Rules),
-                        ]
-                        .into_iter()
-                        .map(|(id, text, kind)| {
-                            button(id, cx)
-                                .h(px(32.))
-                                .label(text)
-                                .disabled(locked)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.save_generated(kind, window, cx)
-                                }))
-                        }),
-                    ),
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .min_w_0()
+                                .flex_1()
+                                .gap(px(3.))
+                                .when(!preview.is_empty(), |this| {
+                                    this.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(6.))
+                                            .text_size(px(12.))
+                                            .text_color(rgb(c.muted))
+                                            .child(
+                                                div()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(rgb(c.ink))
+                                                    .child("字典"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .font_family("Cascadia Mono")
+                                                    .truncate()
+                                                    .child(preview.join(" · ")),
+                                            ),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .text_size(px(12.))
+                                        .text_color(rgb(c.muted))
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(rgb(c.ink))
+                                                .child("规则"),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family("Cascadia Mono")
+                                                .truncate()
+                                                .child(
+                                                    rule_preview
+                                                        .map(|_| rules.join(" · "))
+                                                        .unwrap_or_else(|e| e),
+                                                ),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_shrink_0()
+                                .gap(px(6.))
+                                .children(
+                                    [
+                                        ("save-words", "保存字典并使用", Artifact::Words),
+                                        ("save-rules", "保存规则并使用", Artifact::Rules),
+                                    ]
+                                    .into_iter()
+                                    .map(|(id, text, kind)| {
+                                        button(id, cx)
+                                            .h(px(30.))
+                                            .px(px(10.))
+                                            .label(text)
+                                            .disabled(locked)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.save_generated(kind, window, cx)
+                                            }))
+                                    }),
+                                ),
+                        ),
                 );
         } else if self.attack == 1 {
             let a = self
@@ -289,20 +368,22 @@ impl Workbench {
                 .as_deref()
                 .map(crate::hashcat::file_name)
                 .unwrap_or_else(|| "第二份字典".into());
-            body = body
+            inner = inner
                 .child(
                     div()
-                        .text_size(px(13.))
+                        .text_size(px(12.))
                         .text_color(rgb(c.muted))
-                        .child(format!("组合顺序　{a}  +  {b}")),
+                        .child(format!("组合顺序：{a}  +  {b}")),
                 )
                 .child(
                     div()
                         .flex()
+                        .flex_wrap()
                         .gap(px(6.))
                         .child(
                             button("pair-words", cx)
-                                .h(px(32.))
+                                .h(px(30.))
+                                .px(px(10.))
                                 .label("同时选择两份")
                                 .disabled(locked)
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -311,7 +392,8 @@ impl Workbench {
                         )
                         .child(
                             button("swap-words", cx)
-                                .h(px(32.))
+                                .h(px(30.))
+                                .px(px(10.))
                                 .label("交换两份字典")
                                 .disabled(
                                     locked || (self.words.is_none() && self.second_words.is_none()),
@@ -323,7 +405,8 @@ impl Workbench {
                         )
                         .child(
                             button("same-words", cx)
-                                .h(px(32.))
+                                .h(px(30.))
+                                .px(px(10.))
                                 .label("两边使用第一份")
                                 .disabled(locked || self.words.is_none())
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -337,72 +420,57 @@ impl Workbench {
                 3 => vec![
                     ("4 位数字", "?d?d?d?d", 3),
                     ("6 位数字", "?d?d?d?d?d?d", 3),
+                    ("8 位数字", "?d?d?d?d?d?d?d?d", 3),
                     ("1 字母 + 4 数字", "?l?d?d?d?d", 3),
+                    ("2 字母 + 4 数字", "?l?l?d?d?d?d", 3),
                 ],
-                12 => vec![("字典居中", "?d?w?d", 12), ("连接两个词", "?w-?q", 12)],
+                12 => vec![
+                    ("字典居中", "?d?w?d", 12),
+                    ("连接两个词", "?w-?q", 12),
+                    ("双词 + 2 数字", "?w?q?d?d", 12),
+                ],
                 _ => vec![
                     ("后加 2 位数字", "?d?d", 6),
+                    ("后加 4 位数字", "?d?d?d?d", 6),
                     ("前加 4 位数字", "?d?d?d?d", 7),
+                    ("后加 1 符号", "?s", 6),
                 ],
             };
-            body = body
-                .child(
-                    div().flex().flex_wrap().gap(px(6.)).children(
-                        presets
-                            .drain(..)
-                            .enumerate()
-                            .map(|(i, (title, mask, mode))| {
-                                button(("mask-template", i), cx)
-                                    .h(px(30.))
-                                    .label(title)
-                                    .disabled(locked)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if this.attack != mode {
-                                            this.activate_attack(mode, window, cx);
-                                        }
-                                        this.mask_file = None;
-                                        this.mask_text
-                                            .update(cx, |s, cx| s.set_value(mask, window, cx));
-                                        this.form_error = None;
-                                        cx.notify();
-                                    }))
-                            }),
-                    ),
-                )
-                .child(
-                    div().flex().flex_wrap().gap(px(6.)).children(
-                        [
-                            ("数字", "?d"),
-                            ("小写", "?l"),
-                            ("大写", "?u"),
-                            ("符号", "?s"),
-                        ]
-                        .into_iter()
+            inner = inner.child(
+                div().flex().flex_wrap().gap(px(6.)).children(
+                    presets
+                        .drain(..)
                         .enumerate()
-                        .map(|(i, (title, token))| {
-                            button(("mask-token", i), cx)
-                                .h(px(28.))
-                                .label(format!("+ {title}"))
+                        .map(|(i, (title, mask, mode))| {
+                            button(("mask-template", i), cx)
+                                .h(px(30.))
+                                .px(px(10.))
+                                .label(title)
+                                .tooltip(format!("套用掩码 {mask}"))
                                 .disabled(locked)
                                 .on_click(cx.listener(move |this, _, window, cx| {
+                                    if this.attack != mode {
+                                        this.activate_attack(mode, window, cx);
+                                    }
                                     this.mask_file = None;
-                                    this.mask_text.update(cx, |s, cx| {
-                                        s.set_value(format!("{}{token}", s.value()), window, cx)
-                                    });
+                                    this.mask_text
+                                        .update(cx, |s, cx| s.set_value(mask, window, cx));
+                                    this.form_error = None;
                                     cx.notify();
                                 }))
                         }),
-                    ),
-                );
+                ),
+            );
         }
-        body.when(!self.helpers.note.is_empty() && self.attack == 0, |body| {
-            body.child(
+        let inner = inner.when(!self.helpers.note.is_empty() && self.attack == 0, |box_| {
+            box_.child(
                 div()
-                    .text_size(px(13.))
-                    .text_color(rgb(c.muted))
+                    .text_size(px(12.))
+                    .text_color(rgb(c.success))
                     .child(self.helpers.note.clone()),
             )
-        })
+        });
+        Some(inner)
     }
 
     fn pick_word_pair(&mut self, window: &mut Window, cx: &mut Context<Self>) {

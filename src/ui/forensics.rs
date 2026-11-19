@@ -6,7 +6,7 @@ use gpui::{
     prelude::FluentBuilder, px, relative, rgb,
 };
 use gpui_component::{
-    Disableable,
+    Disableable, Icon, IconName,
     input::{InputEvent, InputState},
 };
 
@@ -59,6 +59,7 @@ pub(super) struct Forensics {
     key_file: Option<PathBuf>,
     progress: Option<forensics::Progress>,
     receipt: Option<Receipt>,
+    copied_receipt: bool,
     notice: Option<Notice>,
 }
 
@@ -76,6 +77,7 @@ impl Forensics {
             key_file: None,
             progress: None,
             receipt: None,
+            copied_receipt: false,
             notice: None,
         }
     }
@@ -171,7 +173,7 @@ impl Workbench {
         let locked = self.picking || state.activity.busy();
         let stacked = window.viewport_size().width < px(940.);
         let image = panel(c)
-            .p(px(16.))
+            .p(px(18.))
             .gap(px(12.))
             .flex_shrink_0()
             .child(
@@ -182,60 +184,142 @@ impl Workbench {
                     .gap(px(12.))
                     .child(section_title("证据镜像"))
                     .child(
-                        button("forensic-image-pick", cx)
-                            .h(px(36.))
-                            .label("选择镜像")
-                            .disabled(locked || !state.installed)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.pick_forensic_file(Pick::Image, window, cx)
-                            })),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .when(state.image.is_some() && !locked, |row| {
+                                row.child(
+                                    button("forensic-image-clear", cx)
+                                        .h(px(34.))
+                                        .px(px(10.))
+                                        .label("清除")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.forensics.image = None;
+                                            this.forensics.inventory = None;
+                                            this.forensics.selected = None;
+                                            this.forensics.receipt = None;
+                                            this.forensics.copied_receipt = false;
+                                            this.forensics.notice = None;
+                                            this.forensics.clear_credential(window, cx);
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .child(
+                                button("forensic-image-pick", cx)
+                                    .h(px(34.))
+                                    .px(px(12.))
+                                    .gap(px(6.))
+                                    .child(
+                                        Icon::new(IconName::Folder)
+                                            .size(px(15.))
+                                            .text_color(rgb(c.muted)),
+                                    )
+                                    .child(if state.image.is_some() {
+                                        "更换镜像"
+                                    } else {
+                                        "选择镜像"
+                                    })
+                                    .disabled(locked || !state.installed)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.pick_forensic_file(Pick::Image, window, cx)
+                                    })),
+                            ),
                     ),
             )
             .child(
                 div()
                     .id("forensic-image-drop")
                     .bg(rgb(c.raised))
-                    .rounded(px(8.))
-                    .p(px(12.))
+                    .border_1()
+                    .border_color(rgb(c.border))
+                    .rounded(px(10.))
+                    .p(px(14.))
                     .flex()
-                    .flex_col()
-                    .gap(px(4.))
+                    .items_center()
+                    .gap(px(12.))
                     .when(state.installed && !locked, |area| {
-                        area.on_drop(cx.listener(|this, files: &ExternalPaths, window, cx| {
-                            if let [path] = files.paths() {
-                                this.inspect_forensic_image(path.clone(), window, cx);
-                            } else {
-                                this.forensics.failed("请选择一个镜像文件。".into());
-                                cx.notify();
-                            }
-                        }))
+                        area.cursor_pointer()
+                            .hover(|style| {
+                                style
+                                    .bg(rgb(c.hover))
+                                    .border_color(rgb(c.selection_border))
+                            })
+                            .drag_over::<ExternalPaths>(move |style, _, _, _| {
+                                style
+                                    .bg(rgb(c.selection))
+                                    .border_color(rgb(c.selection_border))
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.pick_forensic_file(Pick::Image, window, cx)
+                            }))
+                            .on_drop(cx.listener(|this, files: &ExternalPaths, window, cx| {
+                                if let [path] = files.paths() {
+                                    this.inspect_forensic_image(path.clone(), window, cx);
+                                } else {
+                                    this.forensics.failed("请选择一个镜像文件。".into());
+                                    cx.notify();
+                                }
+                            }))
                     })
                     .child(
-                        div().truncate().font_weight(FontWeight::MEDIUM).child(
-                            state
-                                .image
-                                .as_deref()
-                                .map(hashcat::file_name)
-                                .unwrap_or_else(|| {
-                                    if state.installed {
-                                        "拖入磁盘镜像"
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .flex_shrink_0()
+                            .size(px(36.))
+                            .rounded(px(8.))
+                            .bg(rgb(c.panel))
+                            .border_1()
+                            .border_color(rgb(c.subtle_border))
+                            .child(
+                                Icon::new(IconName::Inspector)
+                                    .size(px(18.))
+                                    .text_color(rgb(if state.image.is_some() {
+                                        c.success
                                     } else {
-                                        "安装组件后即可导入镜像"
-                                    }
-                                    .into()
-                                }),
-                        ),
+                                        c.muted
+                                    })),
+                            ),
                     )
                     .child(
-                        detail(
-                            c,
-                            state
-                                .image
-                                .as_ref()
-                                .map(|path| path.display().to_string())
-                                .unwrap_or_else(|| "RAW / DD / IMG、E01、VHD 和 VHDX".into()),
-                        )
-                        .truncate(),
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .flex_1()
+                            .gap(px(3.))
+                            .child(
+                                div().truncate().font_weight(FontWeight::MEDIUM).child(
+                                    state
+                                        .image
+                                        .as_deref()
+                                        .map(hashcat::file_name)
+                                        .unwrap_or_else(|| {
+                                            if state.installed {
+                                                "点击选择或拖入磁盘镜像"
+                                            } else {
+                                                "安装组件后即可导入镜像"
+                                            }
+                                            .into()
+                                        }),
+                                ),
+                            )
+                            .child(
+                                detail(
+                                    c,
+                                    state
+                                        .image
+                                        .as_ref()
+                                        .map(|path| path.display().to_string())
+                                        .unwrap_or_else(|| {
+                                            "支持 RAW / DD / IMG、E01、VHD 和 VHDX".into()
+                                        }),
+                                )
+                                .truncate(),
+                            ),
                     ),
             )
             .when_some(state.inventory.as_ref(), |card, inventory| {
@@ -251,7 +335,24 @@ impl Workbench {
                 } else {
                     label
                 };
-                card.child(detail(c, label))
+                card.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(7.))
+                        .px(px(10.))
+                        .py(px(6.))
+                        .rounded(px(7.))
+                        .bg(rgb(c.success_fill))
+                        .text_size(px(12.))
+                        .text_color(rgb(c.success))
+                        .child(
+                            Icon::new(IconName::CircleCheck)
+                                .size(px(14.))
+                                .text_color(rgb(c.success)),
+                        )
+                        .child(label),
+                )
             })
             .when(matches!(state.activity, Activity::Inspecting(_)), |card| {
                 card.child(
@@ -280,11 +381,11 @@ impl Workbench {
             .pb(px(24.))
             .flex()
             .flex_col()
-            .gap(px(12.))
+            .gap(px(14.))
             .when(!state.installed, |page| {
                 page.child(
                     panel(c)
-                        .p(px(16.))
+                        .p(px(18.))
                         .flex_shrink_0()
                         .gap(px(12.))
                         .items_start()
@@ -296,6 +397,7 @@ impl Workbench {
                         .child(
                             primary("forensic-setup", cx)
                                 .h(px(36.))
+                                .px(px(14.))
                                 .label(if state.activity.busy() {
                                     "正在下载与校验…"
                                 } else {
@@ -312,6 +414,14 @@ impl Workbench {
             .when_some(state.notice.as_ref(), |page, note| {
                 page.child(
                     div()
+                        .px(px(12.))
+                        .py(px(8.))
+                        .rounded(px(8.))
+                        .bg(rgb(if note.error {
+                            c.error_fill
+                        } else {
+                            c.success_fill
+                        }))
                         .text_size(px(13.))
                         .line_height(px(20.))
                         .text_color(rgb(if note.error { c.error } else { c.success }))
@@ -324,7 +434,7 @@ impl Workbench {
                         .flex()
                         .flex_shrink_0()
                         .items_start()
-                        .gap(px(12.))
+                        .gap(px(14.))
                         .when(stacked, |row| row.flex_col())
                         .child(
                             self.forensic_volumes(c, inventory, cx)
@@ -346,26 +456,48 @@ impl Workbench {
 
     fn forensic_volumes(&self, c: Palette, inventory: &Inventory, cx: &mut Context<Self>) -> Div {
         let state = &self.forensics;
+        let locked = self.picking || state.activity.busy();
         panel(c)
-            .p(px(16.))
+            .p(px(18.))
             .gap(px(10.))
             .child(section_title("分区与加密卷"))
             .children(inventory.volumes.iter().enumerate().map(|(index, volume)| {
                 let selected = state.selected == Some(index);
+                let selectable = !volume.methods.is_empty();
                 div()
+                    .id(("forensic-volume-row", index))
                     .flex()
                     .items_center()
                     .gap(px(10.))
-                    .rounded(px(7.))
-                    .p(px(10.))
-                    .bg(rgb(if selected { c.selection } else { c.raised }))
+                    .rounded(px(8.))
+                    .p(px(12.))
+                    .border_1()
+                    .border_color(rgb(if selected {
+                        c.selection_border
+                    } else {
+                        c.subtle_border
+                    }))
+                    .bg(rgb(if selected { c.selection } else { c.monitor }))
+                    .when(selectable && !locked, |row| {
+                        row.cursor_pointer()
+                            .hover(|style| {
+                                style.bg(rgb(if selected {
+                                    c.selection_hover
+                                } else {
+                                    c.hover
+                                }))
+                            })
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_forensic_volume(index, window, cx)
+                            }))
+                    })
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .flex_1()
                             .min_w_0()
-                            .gap(px(2.))
+                            .gap(px(3.))
                             .child(
                                 div()
                                     .truncate()
@@ -385,21 +517,17 @@ impl Workbench {
                                 row.child(detail(c, issue.clone()))
                             }),
                     )
-                    .when(!volume.methods.is_empty(), |row| {
+                    .when(selectable, |row| {
                         row.child(
-                            choice(
-                                ("forensic-volume", index),
-                                if selected { "已选" } else { "选择" },
-                                selected,
-                                cx,
-                            )
-                            .h(px(30.))
-                            .disabled(self.picking || state.activity.busy())
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.select_forensic_volume(index, window, cx)
-                                },
-                            )),
+                            div()
+                                .px(px(9.))
+                                .py(px(3.))
+                                .rounded_full()
+                                .bg(rgb(if selected { c.accent } else { c.raised }))
+                                .text_size(px(12.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(rgb(if selected { c.accent_ink } else { c.muted }))
+                                .child(if selected { "已选" } else { "选择" }),
                         )
                     })
             }))
@@ -425,7 +553,7 @@ impl Workbench {
             _ => !state.secret.read(cx).value().is_empty(),
         };
         panel(c)
-            .p(px(16.))
+            .p(px(18.))
             .gap(px(12.))
             .child(section_title("解密导出"))
             .child(detail(
@@ -446,6 +574,7 @@ impl Workbench {
                             cx,
                         )
                         .h(px(32.))
+                        .px(px(12.))
                         .disabled(locked)
                         .on_click(cx.listener(
                             move |this, _, window, cx| {
@@ -468,6 +597,7 @@ impl Workbench {
                         .child(
                             button("forensic-key-file", cx)
                                 .h(px(36.))
+                                .px(px(12.))
                                 .label("选择密钥文件")
                                 .disabled(locked)
                                 .on_click(cx.listener(|this, _, window, cx| {
@@ -480,32 +610,40 @@ impl Workbench {
                 )
             })
             .when(state.method != Method::KeyFile, |card| {
-                card.child(single_line(&state.secret).disabled(locked))
+                card.child(
+                    single_line(&state.secret)
+                        .mask_toggle()
+                        .cleanable(true)
+                        .disabled(locked),
+                )
             })
             .child(detail(
                 c,
                 "以只读方式打开源镜像，将选中的卷保存为新 RAW 文件。",
             ))
             .when(matches!(state.activity, Activity::Exporting(_)), |card| {
-                let status = if state.stopping {
-                    "正在取消…".to_owned()
+                let (status, fraction) = if state.stopping {
+                    ("正在取消…".to_owned(), None)
                 } else if let Some(progress) = state.progress {
-                    format!(
-                        "正在导出  {} / {}",
-                        size_label(progress.done),
-                        size_label(progress.total)
+                    let frac = (progress.done as f32 / progress.total.max(1) as f32).clamp(0., 1.);
+                    (
+                        format!(
+                            "正在导出  {} / {}  ({:.1}%)",
+                            size_label(progress.done),
+                            size_label(progress.total),
+                            frac * 100.
+                        ),
+                        Some(frac),
                     )
                 } else {
-                    "正在验证凭据…".to_owned()
+                    ("正在验证凭据…".to_owned(), None)
                 };
                 card.child(detail(c, status))
-                    .when_some(state.progress, |card, progress| {
-                        let fraction =
-                            (progress.done as f32 / progress.total.max(1) as f32).clamp(0., 1.);
+                    .when_some(fraction, |card, fraction| {
                         card.child(
                             div()
                                 .w_full()
-                                .h(px(5.))
+                                .h(px(7.))
                                 .rounded_full()
                                 .bg(rgb(c.raised))
                                 .child(
@@ -524,6 +662,7 @@ impl Workbench {
                     div().flex().child(
                         primary("forensic-export", cx)
                             .h(px(40.))
+                            .px(px(16.))
                             .label("解密并导出")
                             .disabled(locked || !has_credential)
                             .on_click(cx.listener(|this, _, window, cx| {
@@ -538,24 +677,43 @@ impl Workbench {
                 card.child(
                     div()
                         .border_t_1()
-                        .border_color(rgb(c.border))
+                        .border_color(rgb(c.subtle_border))
                         .pt(px(12.))
                         .flex()
                         .flex_col()
-                        .gap(px(6.))
+                        .gap(px(8.))
                         .child(
                             div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
                                 .text_color(rgb(c.success))
                                 .font_weight(FontWeight::SEMIBOLD)
+                                .child(
+                                    Icon::new(IconName::CircleCheck)
+                                        .size(px(15.))
+                                        .text_color(rgb(c.success)),
+                                )
                                 .child(format!("已导出  {}", size_label(receipt.size))),
                         )
                         .child(detail(c, receipt.path.display().to_string()).truncate())
-                        .child(detail(c, "SHA-256"))
                         .child(
                             div()
-                                .text_size(px(12.))
-                                .font_family("Consolas")
-                                .child(receipt.sha256.clone()),
+                                .flex()
+                                .flex_col()
+                                .gap(px(3.))
+                                .p(px(10.))
+                                .rounded(px(8.))
+                                .bg(rgb(c.monitor))
+                                .border_1()
+                                .border_color(rgb(c.subtle_border))
+                                .child(detail(c, "SHA-256"))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_family("Cascadia Mono")
+                                        .child(receipt.sha256.clone()),
+                                ),
                         )
                         .child(
                             div()
@@ -565,18 +723,46 @@ impl Workbench {
                                 .child(
                                     button("forensic-reveal", cx)
                                         .h(px(32.))
-                                        .label("查看文件")
+                                        .px(px(10.))
+                                        .gap(px(5.))
+                                        .child(
+                                            Icon::new(IconName::ExternalLink)
+                                                .size(px(13.))
+                                                .text_color(rgb(c.muted)),
+                                        )
+                                        .child("查看文件")
                                         .on_click(move |_, _, cx| cx.reveal_path(&path)),
                                 )
                                 .child(
                                     button("forensic-copy", cx)
                                         .h(px(32.))
-                                        .label("复制取证记录")
-                                        .on_click(move |_, _, cx| {
+                                        .px(px(10.))
+                                        .gap(px(5.))
+                                        .child(
+                                            Icon::new(if state.copied_receipt {
+                                                IconName::Check
+                                            } else {
+                                                IconName::Copy
+                                            })
+                                            .size(px(13.))
+                                            .text_color(rgb(if state.copied_receipt {
+                                                c.success
+                                            } else {
+                                                c.muted
+                                            })),
+                                        )
+                                        .child(if state.copied_receipt {
+                                            "已复制记录"
+                                        } else {
+                                            "复制取证记录"
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
                                                 record.clone(),
                                             ));
-                                        }),
+                                            this.forensics.copied_receipt = true;
+                                            cx.notify();
+                                        })),
                                 ),
                         ),
                 )
@@ -679,6 +865,7 @@ impl Workbench {
         state.selected = None;
         state.notice = None;
         state.receipt = None;
+        state.copied_receipt = false;
         state.image = Some(image.clone());
         state.clear_credential(window, cx);
         let data = self.data.clone();
@@ -729,6 +916,7 @@ impl Workbench {
         state.selected = Some(index);
         state.method = method;
         state.receipt = None;
+        state.copied_receipt = false;
         state.notice = None;
         state.clear_credential(window, cx);
         cx.notify();
@@ -829,6 +1017,7 @@ impl Workbench {
         state.activity = Activity::Exporting(cancel);
         state.progress = None;
         state.receipt = None;
+        state.copied_receipt = false;
         state.notice = None;
         state.clear_credential(window, cx);
         let data = self.data.clone();

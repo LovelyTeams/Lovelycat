@@ -14,11 +14,12 @@ use std::{
 };
 
 use gpui::{
-    App, AppContext, Context, Entity, PathPromptOptions, ScrollHandle, SharedString, Window, px,
+    App, AppContext, Context, Entity, KeyDownEvent, PathPromptOptions, ScrollHandle, SharedString,
+    Window, px,
 };
 use gpui_component::{
     IndexPath,
-    input::InputState,
+    input::{InputEvent, InputState},
     select::{SearchableVec, SelectEvent, SelectItem, SelectState},
 };
 
@@ -120,7 +121,7 @@ impl Phase {
 enum DeviceQuery {
     Idle,
     Pending,
-    Ready(String),
+    Ready(hashcat::DeviceReport),
     Failed(String),
 }
 
@@ -170,6 +171,7 @@ pub struct Workbench {
     probing: bool,
     engine_notice: Option<Notice>,
     devices: DeviceQuery,
+    devices_raw: bool,
     picking: bool,
     preferences: Preferences,
     outline: WindowOutline,
@@ -183,6 +185,7 @@ pub struct Workbench {
     source: Source,
     protected_file: Option<PathBuf>,
     extraction: Extraction,
+    copied_hash: bool,
     hashes: Option<PathBuf>,
     hash_text: Entity<InputState>,
     modes: Entity<SelectState<SearchableVec<ModeChoice>>>,
@@ -210,11 +213,18 @@ pub struct Workbench {
     found_passwords: Vec<String>,
     run_error: Option<String>,
     copied_log: bool,
+    copied_passwords: bool,
+    copied_password_idx: Option<usize>,
 
     results: Vec<ResultFile>,
+    results_search: Entity<InputState>,
     selected_result: Option<PathBuf>,
     result_preview: Option<Result<(String, bool), String>>,
     results_scroll: ScrollHandle,
+    form_scroll: ScrollHandle,
+    settings_scroll: ScrollHandle,
+    copied_result: bool,
+    copied_devices: bool,
 }
 
 impl Workbench {
@@ -239,6 +249,26 @@ impl Workbench {
             }
         })
         .detach();
+        let hash_text = cx.new(|cx| {
+            InputState::new(window, cx)
+                .multi_line(true)
+                .rows(4)
+                .placeholder("每行粘贴一条哈希")
+        });
+        cx.subscribe(&hash_text, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+        let results_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("搜索文件名或来源"));
+        cx.subscribe(&results_search, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
         let mut this = Self {
             page: Page::Task,
             locations: hashcat::ResultLocations::load(&data),
@@ -252,6 +282,7 @@ impl Workbench {
             probing: false,
             engine_notice: None,
             devices: DeviceQuery::Idle,
+            devices_raw: false,
             picking: false,
             preferences,
             outline: WindowOutline::default(),
@@ -259,13 +290,9 @@ impl Workbench {
             source: Source::Protected,
             protected_file: None,
             extraction: Extraction::Idle,
+            copied_hash: false,
             hashes: None,
-            hash_text: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .multi_line(true)
-                    .rows(3)
-                    .placeholder("每行粘贴一条哈希")
-            }),
+            hash_text,
             modes: cx.new(|cx| {
                 SelectState::new(
                     SearchableVec::new(vec![auto_mode()]),
@@ -303,10 +330,17 @@ impl Workbench {
             found_passwords: Vec::new(),
             run_error: None,
             copied_log: false,
+            copied_passwords: false,
+            copied_password_idx: None,
             results: Vec::new(),
+            results_search,
             selected_result: None,
             result_preview: None,
             results_scroll: ScrollHandle::new(),
+            form_scroll: ScrollHandle::new(),
+            settings_scroll: ScrollHandle::new(),
+            copied_result: false,
+            copied_devices: false,
         };
         cx.observe_window_bounds(window, |this, window, cx| {
             this.queue_outline(window, cx);
@@ -538,6 +572,7 @@ impl Workbench {
             FileSlot::Protected => {
                 self.protected_file = Some(path.clone());
                 self.extraction = Extraction::Pending;
+                self.copied_hash = false;
                 let task = cx.background_spawn(async move { protected::extract(&path) });
                 cx.spawn_in(window, async move |weak, cx| {
                     let result = task.await;
@@ -761,6 +796,8 @@ impl Workbench {
         };
         self.logs.clear();
         self.copied_log = false;
+        self.copied_passwords = false;
+        self.copied_password_idx = None;
         self.status = Status::default();
         self.form_error = None;
         self.run_error = None;
@@ -793,7 +830,11 @@ impl Workbench {
     fn on_run_event(&mut self, event: RunEvent) {
         match event {
             RunEvent::ResultPath(path) => self.current_result = Some(path),
-            RunEvent::Passwords(passwords) => self.found_passwords.extend(passwords),
+            RunEvent::Passwords(passwords) => {
+                self.found_passwords.extend(passwords);
+                self.copied_passwords = false;
+                self.copied_password_idx = None;
+            }
             RunEvent::Status(status) => {
                 if self.phase == Phase::Starting {
                     self.phase = Phase::Running;
@@ -846,12 +887,15 @@ impl Workbench {
             return;
         };
         self.devices = DeviceQuery::Pending;
-        let task = cx.background_spawn(async move { hashcat::devices(&executable) });
+        self.copied_devices = false;
+        let task = cx.background_spawn(async move {
+            hashcat::devices(&executable).map(|text| hashcat::parse_devices(&text))
+        });
         cx.spawn_in(window, async move |weak, cx| {
             let output = task.await;
             let _ = weak.update_in(cx, |this, _, cx| {
                 this.devices = match output {
-                    Ok(text) => DeviceQuery::Ready(text),
+                    Ok(report) => DeviceQuery::Ready(report),
                     Err(text) => DeviceQuery::Failed(text),
                 };
                 cx.notify();
@@ -859,6 +903,27 @@ impl Workbench {
         })
         .detach();
         cx.notify();
+    }
+
+    fn has_username_conflict(&self, cx: &App) -> Option<&'static str> {
+        if !self.username || self.source == Source::Protected {
+            return None;
+        }
+        let selected_mode = self.modes.read(cx).selected_value().copied().flatten();
+        if selected_mode.is_some_and(hashcat::mode_embeds_username) {
+            return Some(
+                "当前所选哈希格式本身已包含用户名，勾选「输入含用户名」会导致 Hashcat 解析错位。",
+            );
+        }
+        if self.source == Source::Paste {
+            let text = self.hash_text.read(cx).value();
+            if text.lines().any(|line| line.contains("::")) {
+                return Some(
+                    "检测到哈希中包含 \"::\"（如 NetNTLMv1/v2），此类格式已自带用户名，通常无需勾选此项。",
+                );
+            }
+        }
+        None
     }
 
     fn change_page(&mut self, page: Page, cx: &mut Context<Self>) {
@@ -886,8 +951,136 @@ impl Workbench {
         });
         if self.selected_result != path {
             self.results_scroll.set_offset(gpui::point(px(0.), px(0.)));
+            self.copied_result = false;
         }
         self.selected_result = path;
+    }
+
+    fn clear_file_slot(&mut self, slot: FileSlot, cx: &mut Context<Self>) {
+        if self.form_locked() {
+            return;
+        }
+        match slot {
+            FileSlot::Protected => {
+                self.protected_file = None;
+                self.extraction = Extraction::Idle;
+                self.copied_hash = false;
+            }
+            FileSlot::Hashes => {
+                self.hashes = None;
+                self.type_notice = None;
+            }
+            FileSlot::Words => self.words = None,
+            FileSlot::SecondWords => self.second_words = None,
+            FileSlot::Rule => self.rule = None,
+            FileSlot::Mask => self.mask_file = None,
+            _ => return,
+        }
+        self.form_error = None;
+        cx.notify();
+    }
+
+    fn has_task_input(&self, cx: &App) -> bool {
+        self.protected_file.is_some()
+            || self.hashes.is_some()
+            || !self.hash_text.read(cx).value().trim().is_empty()
+            || self.words.is_some()
+            || self.second_words.is_some()
+            || self.rule.is_some()
+            || self.mask_file.is_some()
+            || !self.mask_text.read(cx).value().is_empty()
+            || !self.operands.read(cx).value().trim().is_empty()
+    }
+
+    fn reset_task_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.form_locked() {
+            return;
+        }
+        self.protected_file = None;
+        self.extraction = Extraction::Idle;
+        self.copied_hash = false;
+        self.hashes = None;
+        self.hash_text
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.type_notice = None;
+        self.username = false;
+        self.words = None;
+        self.second_words = None;
+        self.rule = None;
+        self.mask_file = None;
+        self.mask_text
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.operands
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.operand_drafts.clear();
+        self.form_error = None;
+        self.set_modes(&[], window, cx);
+        cx.notify();
+    }
+
+    fn paste_hashes_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.form_locked() {
+            return;
+        }
+        if let Some(item) = cx.read_from_clipboard()
+            && let Some(text) = item.text()
+        {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                self.hash_text
+                    .update(cx, |state, cx| state.set_value(trimmed.to_owned(), window, cx));
+                self.type_notice = None;
+                self.form_error = None;
+                cx.notify();
+            }
+        }
+    }
+
+    fn clear_logs(&mut self, cx: &mut Context<Self>) {
+        if self.cancel.is_some() {
+            return;
+        }
+        self.logs.clear();
+        self.copied_log = false;
+        self.run_error = None;
+        if matches!(
+            self.phase,
+            Phase::Recovered | Phase::Exhausted | Phase::Stopped | Phase::Failed
+        ) {
+            self.phase = Phase::Ready;
+            self.status = Status::default();
+            self.found_passwords.clear();
+            self.current_result = None;
+            self.copied_passwords = false;
+            self.copied_password_idx = None;
+        }
+        cx.notify();
+    }
+
+    fn handle_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let mods = &event.keystroke.modifiers;
+        if !(mods.control || mods.platform) || mods.alt {
+            return;
+        }
+        match event.keystroke.key.as_str() {
+            "1" => self.change_page(Page::Task, cx),
+            "2" => self.change_page(Page::Results, cx),
+            "3" => self.change_page(Page::Tools, cx),
+            "4" => self.change_page(Page::Forensics, cx),
+            "5" => self.change_page(Page::Settings, cx),
+            "enter" => match self.page {
+                Page::Task if self.cancel.is_none() => self.start_task(window, cx),
+                Page::Tools if self.tools.cancel.is_none() => {
+                    self.run_command(false, None, window, cx)
+                }
+                _ => {}
+            },
+            "r" if self.page == Page::Results => {
+                self.refresh_results();
+                cx.notify();
+            }
+            _ => {}
+        }
     }
 
     fn open_data_dir(&mut self, cx: &mut Context<Self>) {

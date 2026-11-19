@@ -33,6 +33,7 @@ pub(super) struct EngineTools {
     pub(super) status: String,
     logs: VecDeque<SharedString>,
     scroll: ScrollHandle,
+    copied_output: bool,
 }
 
 impl EngineTools {
@@ -62,6 +63,7 @@ impl EngineTools {
             status: "就绪".into(),
             logs: VecDeque::new(),
             scroll: ScrollHandle::new(),
+            copied_output: false,
         }
     }
 }
@@ -130,31 +132,42 @@ impl Workbench {
             ("methods", "候选模式", Section::Attacks),
             ("flags", "命令选项", Section::Options),
         ];
-        let header =
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(12.))
-                .p(px(16.))
-                .flex_shrink_0()
-                .child(
-                    div()
-                        .flex()
-                        .justify_between()
-                        .items_center()
-                        .child(section_title("功能目录"))
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .text_color(rgb(c.muted))
-                                .child(format!("{count} 项")),
-                        ),
-                )
-                .child(div().flex().gap(px(4.)).children(tabs.into_iter().map(
-                    |(id, label, tab)| {
+        let header = div()
+            .flex()
+            .flex_col()
+            .gap(px(12.))
+            .p(px(18.))
+            .flex_shrink_0()
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .child(section_title("功能目录"))
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .rounded_full()
+                            .bg(rgb(c.raised))
+                            .text_size(px(12.))
+                            .text_color(rgb(c.muted))
+                            .child(format!("{count} 项")),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .p(px(3.))
+                    .rounded(px(9.))
+                    .bg(rgb(c.background))
+                    .border_1()
+                    .border_color(rgb(c.subtle_border))
+                    .gap(px(3.))
+                    .children(tabs.into_iter().map(|(id, label, tab)| {
                         choice(id, label, section == tab, cx)
                             .flex_1()
-                            .h(px(32.))
+                            .h(px(30.))
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if this.tools.section != tab {
                                     this.tools.section = tab;
@@ -167,17 +180,17 @@ impl Workbench {
                                     cx.notify();
                                 }
                             }))
-                    },
-                )))
-                .child(
-                    single_line(&self.tools.search)
-                        .prefix(
-                            Icon::new(IconName::Search)
-                                .size(px(16.))
-                                .text_color(rgb(c.muted)),
-                        )
-                        .cleanable(true),
-                );
+                    })),
+            )
+            .child(
+                single_line(&self.tools.search)
+                    .prefix(
+                        Icon::new(IconName::Search)
+                            .size(px(16.))
+                            .text_color(rgb(c.muted)),
+                    )
+                    .cleanable(true),
+            );
         panel(c)
             .min_w_0()
             .min_h_0()
@@ -252,10 +265,11 @@ impl Workbench {
             .flex()
             .items_center()
             .h(px(56.))
-            .px(px(16.))
+            .px(px(18.))
             .gap(px(8.))
             .border_t_1()
-            .border_color(rgb(c.border))
+            .border_color(rgb(c.subtle_border))
+            .hover(|style| style.bg(rgb(c.hover)))
             .child(
                 div()
                     .min_w_0()
@@ -283,7 +297,7 @@ impl Workbench {
                 row.child(
                     button(("use-in-task", index), cx)
                         .h(px(28.))
-                        .px(px(8.))
+                        .px(px(9.))
                         .label("用于任务")
                         .disabled(locked)
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -311,14 +325,17 @@ impl Workbench {
             })
             .child(
                 button(("append-argument", index), cx)
-                    .w(px(32.))
+                    .w(px(30.))
                     .h(px(28.))
                     .p_0()
                     .child(Icon::new(IconName::Plus).size(px(14.)))
                     .tooltip(format!("添加到参数\n{hint}"))
                     .disabled(locked)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        append_lines(&this.tools.arguments, &arguments, window, cx)
+                        append_lines(&this.tools.arguments, &arguments, window, cx);
+                        this.tools.status =
+                            format!("已添加参数：{}", arguments.replace('\n', " "));
+                        cx.notify();
                     })),
             );
         Some(row)
@@ -334,11 +351,12 @@ impl Workbench {
             ("preset-device", "设备", "-I"),
             ("preset-bench", "基准测试", "--benchmark"),
         ];
+        let has_args = !self.tools.arguments.read(cx).value().trim().is_empty();
         let editor = div()
             .flex()
             .flex_col()
             .gap(px(10.))
-            .p(px(16.))
+            .p(px(18.))
             .flex_shrink_0()
             .child(
                 div()
@@ -347,30 +365,51 @@ impl Workbench {
                     .justify_between()
                     .gap(px(8.))
                     .child(section_title("本机命令"))
-                    .child(div().flex().gap(px(4.)).children(presets.into_iter().map(
-                        |(id, label, preset)| {
-                            button(id, cx)
-                                .h(px(28.))
-                                .px(px(8.))
-                                .label(label)
-                                .tooltip(format!("填入 {preset}"))
-                                .disabled(locked)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.tools.arguments.update(cx, |state, cx| {
-                                        state.set_value(preset, window, cx)
-                                    });
-                                }))
-                        },
-                    ))),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .children(presets.into_iter().map(|(id, label, preset)| {
+                                button(id, cx)
+                                    .h(px(28.))
+                                    .px(px(8.))
+                                    .label(label)
+                                    .tooltip(format!("填入 {preset}"))
+                                    .disabled(locked)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.tools.arguments.update(cx, |state, cx| {
+                                            state.set_value(preset, window, cx)
+                                        });
+                                    }))
+                            }))
+                            .when(has_args, |row| {
+                                row.child(
+                                    button("clear-args", cx)
+                                        .h(px(28.))
+                                        .px(px(8.))
+                                        .label("清空")
+                                        .tooltip("清空所有参数")
+                                        .disabled(locked)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.tools
+                                                .arguments
+                                                .update(cx, |state, cx| state.set_value("", window, cx));
+                                            this.tools.stdin = None;
+                                            cx.notify();
+                                        })),
+                                )
+                            }),
+                    ),
             )
             .child(
                 div()
-                    .text_size(px(13.))
+                    .text_size(px(12.))
                     .text_color(rgb(c.muted))
-                    .child("每行一个参数。含空格的路径直接填写，无需加引号。"),
+                    .child("每行一个参数。含空格的路径直接填写，无需加引号。按 Ctrl+Enter 快速运行。"),
             )
             .child(
-                multiline(&self.tools.arguments, 104.)
+                multiline(&self.tools.arguments, 108.)
                     .font_family("Cascadia Mono")
                     .disabled(busy),
             )
@@ -390,7 +429,7 @@ impl Workbench {
                         .map(|(id, label, slot)| {
                             button(id, cx)
                                 .h(px(30.))
-                                .px(px(8.))
+                                .px(px(9.))
                                 .label(label)
                                 .disabled(locked)
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -402,7 +441,8 @@ impl Workbench {
                         row.child(
                             button("clear-stdin", cx)
                                 .h(px(30.))
-                                .label(format!("{} ×", hashcat::file_name(path)))
+                                .px(px(9.))
+                                .label(format!("stdin: {} ×", hashcat::file_name(path)))
                                 .tooltip(format!("清除标准输入文件 {}", path.display()))
                                 .disabled(locked)
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -423,6 +463,7 @@ impl Workbench {
                             row.child(
                                 button("stop-command", cx)
                                     .h(px(36.))
+                                    .px(px(14.))
                                     .label("停止命令")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if let Some(cancel) = &this.tools.cancel {
@@ -436,7 +477,9 @@ impl Workbench {
                             row.child(
                                 primary("run-command", cx)
                                     .h(px(36.))
+                                    .px(px(14.))
                                     .label("运行命令")
+                                    .tooltip("运行当前命令 (Ctrl+Enter)")
                                     .disabled(locked)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.run_command(false, None, window, cx)
@@ -445,6 +488,7 @@ impl Workbench {
                             .child(
                                 button("export-stdout", cx)
                                     .h(px(36.))
+                                    .px(px(12.))
                                     .label("运行并导出")
                                     .tooltip("将完整标准输出直接写入所选文件")
                                     .disabled(locked)
@@ -456,6 +500,7 @@ impl Workbench {
                                 row.child(
                                     button("terminal-command", cx)
                                         .h(px(36.))
+                                        .px(px(12.))
                                         .label("交互终端")
                                         .tooltip("在独立终端中手动操作 Hashcat")
                                         .disabled(locked || self.tools.stdin.is_some())
@@ -482,21 +527,56 @@ impl Workbench {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .px(px(16.))
+                    .px(px(18.))
+                    .border_b_1()
+                    .border_color(rgb(c.subtle_border))
                     .child(section_title("输出"))
                     .child(
                         div()
                             .min_w_0()
                             .flex_1()
                             .text_ellipsis()
-                            .text_size(px(13.))
+                            .text_size(px(12.))
                             .text_color(rgb(c.muted))
                             .child(self.tools.status.clone()),
                     )
+                    .when(!self.tools.logs.is_empty() && !busy, |row| {
+                        row.child(
+                            button("clear-command-output", cx)
+                                .h(px(28.))
+                                .px(px(8.))
+                                .label("清空")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.tools.logs.clear();
+                                    this.tools.copied_output = false;
+                                    this.tools.status = "就绪".into();
+                                    cx.notify();
+                                })),
+                        )
+                    })
                     .child(
                         button("copy-command-output", cx)
                             .h(px(28.))
-                            .label("复制")
+                            .px(px(9.))
+                            .gap(px(5.))
+                            .child(
+                                Icon::new(if self.tools.copied_output {
+                                    IconName::Check
+                                } else {
+                                    IconName::Copy
+                                })
+                                .size(px(13.))
+                                .text_color(rgb(if self.tools.copied_output {
+                                    c.success
+                                } else {
+                                    c.muted
+                                })),
+                            )
+                            .child(if self.tools.copied_output {
+                                "已复制"
+                            } else {
+                                "复制"
+                            })
                             .disabled(self.tools.logs.is_empty())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let text = this
@@ -507,6 +587,8 @@ impl Workbench {
                                     .collect::<Vec<_>>()
                                     .join("\n");
                                 cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                this.tools.copied_output = true;
+                                cx.notify();
                             })),
                     ),
             )
@@ -517,8 +599,8 @@ impl Workbench {
                     .min_h_0()
                     .overflow_scroll()
                     .track_scroll(&self.tools.scroll)
-                    .px(px(16.))
-                    .pb(px(12.))
+                    .px(px(18.))
+                    .py(px(12.))
                     .font_family("Cascadia Mono")
                     .text_size(px(13.))
                     .line_height(px(20.))
@@ -572,7 +654,7 @@ impl Workbench {
         cx.notify();
     }
 
-    fn run_command(
+    pub(super) fn run_command(
         &mut self,
         terminal: bool,
         output: Option<PathBuf>,
@@ -596,6 +678,7 @@ impl Workbench {
             hashcat::start_command(exe, args, terminal, self.tools.stdin.clone(), output);
         self.tools.cancel = Some(cancel);
         self.tools.logs.clear();
+        self.tools.copied_output = false;
         self.tools.scroll.set_offset(gpui::point(px(0.), px(0.)));
         self.tools.status = if terminal {
             "在独立终端中运行"
