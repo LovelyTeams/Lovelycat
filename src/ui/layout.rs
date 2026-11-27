@@ -19,12 +19,18 @@ use super::{
     DeviceQuery, Extraction, FileSlot, Notice, Page, Phase, Source, UpdateState, Workbench, hashcat,
 };
 
-use super::palette::{Palette, colors, theme_name, theme_swatch};
+#[cfg(windows)]
+use super::palette::reset_root_background;
+use super::palette::{Palette, colors, set_widget_background, theme_name, theme_swatch};
 use crate::desktop::{Appearance, CAT_EAR_HEIGHT, Outline};
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = colors(cx);
+        // Root::render already painted transparent beneath Windows cat ears.
+        // Switch Theme.background to an opaque panel surface so child widgets
+        // (Select popovers, search inputs, text fields, Tooltips) never turn transparent.
+        set_widget_background(colors, cx);
         let cat = cfg!(windows)
             && self.preferences.outline == Outline::Cat
             && !window.is_maximized()
@@ -61,6 +67,16 @@ impl Render for Workbench {
                         Page::Settings => self.environment_page(window, cx).into_any_element(),
                     }),
             )
+            .when(cfg!(windows), |this| {
+                #[cfg(windows)]
+                {
+                    this.child(restore_root_background())
+                }
+                #[cfg(not(windows))]
+                {
+                    this
+                }
+            })
     }
 }
 
@@ -2320,6 +2336,25 @@ impl Workbench {
             Some(Ok((content, _))) => Some(content.clone()),
             _ => None,
         };
+        let extracted_passwords: Option<String> = match &self.result_preview {
+            Some(Ok((content, _))) => {
+                let mut any_hash_prefix = false;
+                let mut list = Vec::new();
+                for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                    let (hash, pass) = hashcat::split_result_line(line);
+                    if hash.is_some() {
+                        any_hash_prefix = true;
+                    }
+                    list.push(pass);
+                }
+                if any_hash_prefix && !list.is_empty() {
+                    Some(list.join("\n"))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
         let display = panel(colors)
             .flex_1()
             .min_w_0()
@@ -2351,6 +2386,60 @@ impl Workbench {
                             .items_center()
                             .gap(px(6.))
                             .flex_shrink_0()
+                            .when(copy_content.is_some(), |row| {
+                                row.child(
+                                    choice("toggle-result-wrap", "自动换行", self.result_wrap, cx)
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .tooltip(if self.result_wrap {
+                                            "当前自动换行，点击切换为单行横向滚动"
+                                        } else {
+                                            "当前单行横向滚动，点击开启自动换行"
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.result_wrap = !this.result_wrap;
+                                            this.results_scroll
+                                                .set_offset(gpui::point(px(0.), px(0.)));
+                                            cx.notify();
+                                        })),
+                                )
+                            })
+                            .when_some(extracted_passwords, |row, passwords| {
+                                row.child(
+                                    button("copy-result-passwords", cx)
+                                        .h(px(30.))
+                                        .px(px(10.))
+                                        .gap(px(5.))
+                                        .child(icon(
+                                            if self.copied_result_passwords {
+                                                IconName::Check
+                                            } else {
+                                                IconName::Copy
+                                            },
+                                            if self.copied_result_passwords {
+                                                colors.success
+                                            } else {
+                                                colors.success
+                                            },
+                                            13.,
+                                        ))
+                                        .child(if self.copied_result_passwords {
+                                            "已复制密码"
+                                        } else {
+                                            "复制密码"
+                                        })
+                                        .tooltip("仅复制解析出的明文密码（不含哈希前缀）")
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                passwords.clone(),
+                                            ));
+                                            this.copied_result_passwords = true;
+                                            this.copied_result = false;
+                                            this.copied_result_row = None;
+                                            cx.notify();
+                                        })),
+                                )
+                            })
                             .when_some(copy_content, |row, content| {
                                 row.child(
                                     button("copy-result-preview", cx)
@@ -2373,13 +2462,15 @@ impl Workbench {
                                         .child(if self.copied_result {
                                             "已复制"
                                         } else {
-                                            "复制内容"
+                                            "复制全文"
                                         })
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
                                                 content.clone(),
                                             ));
                                             this.copied_result = true;
+                                            this.copied_result_passwords = false;
+                                            this.copied_result_row = None;
                                             cx.notify();
                                         })),
                                 )
@@ -2401,26 +2492,216 @@ impl Workbench {
             )
             .child(match &self.result_preview {
                 Some(Ok((content, truncated))) => {
+                    let non_empty: Vec<&str> =
+                        content.lines().filter(|l| !l.trim().is_empty()).collect();
                     let lines = content.lines().count();
+                    let body: AnyElement = if self.result_wrap {
+                        let inner: AnyElement = if non_empty.len() <= 200 {
+                            div()
+                                .flex()
+                                .flex_col()
+                                .w_full()
+                                .min_w_0()
+                                .gap(px(10.))
+                                .children(non_empty.into_iter().enumerate().map(|(i, raw)| {
+                                    let (hash_prefix, password) = hashcat::split_result_line(raw);
+                                    let copied = self.copied_result_row == Some(i);
+                                    let copy_val = password.clone();
+                                    let display_pw = if password.is_empty() {
+                                        "（空密码）".to_owned()
+                                    } else {
+                                        password
+                                    };
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .w_full()
+                                        .min_w_0()
+                                        .gap(px(6.))
+                                        .p(px(12.))
+                                        .rounded(px(9.))
+                                        .bg(rgb(colors.panel))
+                                        .border_1()
+                                        .border_color(rgb(colors.subtle_border))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .justify_between()
+                                                .flex_wrap()
+                                                .gap(px(8.))
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .min_w_0()
+                                                        .flex_1()
+                                                        .gap(px(8.))
+                                                        .child(
+                                                            div()
+                                                                .flex_shrink_0()
+                                                                .px(px(6.))
+                                                                .py(px(1.))
+                                                                .rounded(px(5.))
+                                                                .bg(rgb(colors.raised))
+                                                                .font_family("Cascadia Mono")
+                                                                .text_size(px(11.))
+                                                                .text_color(rgb(colors.muted))
+                                                                .child(format!("#{}", i + 1)),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .items_center()
+                                                                .min_w_0()
+                                                                .gap(px(6.))
+                                                                .px(px(9.))
+                                                                .py(px(3.))
+                                                                .rounded(px(6.))
+                                                                .bg(rgb(colors.success_fill))
+                                                                .child(
+                                                                    div()
+                                                                        .flex_shrink_0()
+                                                                        .text_size(px(11.5))
+                                                                        .text_color(rgb(
+                                                                            colors.success,
+                                                                        ))
+                                                                        .child("明文"),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .min_w_0()
+                                                                        .font_family(
+                                                                            "Cascadia Mono",
+                                                                        )
+                                                                        .text_size(px(13.5))
+                                                                        .font_weight(
+                                                                            FontWeight::SEMIBOLD,
+                                                                        )
+                                                                        .text_color(rgb(colors.ink))
+                                                                        .child(display_pw),
+                                                                ),
+                                                        ),
+                                                )
+                                                .child(
+                                                    button(("copy-result-row", i), cx)
+                                                        .h(px(26.))
+                                                        .px(px(8.))
+                                                        .gap(px(4.))
+                                                        .flex_shrink_0()
+                                                        .child(icon(
+                                                            if copied {
+                                                                IconName::Check
+                                                            } else {
+                                                                IconName::Copy
+                                                            },
+                                                            if copied {
+                                                                colors.success
+                                                            } else {
+                                                                colors.muted
+                                                            },
+                                                            12.,
+                                                        ))
+                                                        .child(
+                                                            div().text_size(px(12.)).child(
+                                                                if copied {
+                                                                    "已复制"
+                                                                } else {
+                                                                    "复制密码"
+                                                                },
+                                                            ),
+                                                        )
+                                                        .on_click(cx.listener(
+                                                            move |this, _, _, cx| {
+                                                                cx.write_to_clipboard(
+                                                                    ClipboardItem::new_string(
+                                                                        copy_val.clone(),
+                                                                    ),
+                                                                );
+                                                                this.copied_result_row = Some(i);
+                                                                this.copied_result = false;
+                                                                this.copied_result_passwords =
+                                                                    false;
+                                                                cx.notify();
+                                                            },
+                                                        )),
+                                                ),
+                                        )
+                                        .when(hash_prefix.is_some(), |card| {
+                                            card.child(
+                                                div()
+                                                    .w_full()
+                                                    .min_w_0()
+                                                    .pt(px(4.))
+                                                    .border_t_1()
+                                                    .border_color(rgb(colors.subtle_border))
+                                                    .font_family("Cascadia Mono")
+                                                    .text_size(px(12.5))
+                                                    .line_height(px(20.))
+                                                    .text_color(rgb(colors.muted))
+                                                    .child(raw.to_owned()),
+                                            )
+                                        })
+                                }))
+                                .into_any_element()
+                        } else {
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .font_family("Cascadia Mono")
+                                .text_size(px(13.))
+                                .line_height(px(21.))
+                                .child(content.clone())
+                                .into_any_element()
+                        };
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .child(
+                                div()
+                                    .id("result-preview")
+                                    .size_full()
+                                    .min_w_0()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.results_scroll)
+                                    .p(px(16.))
+                                    .bg(rgb(colors.monitor))
+                                    .child(inner),
+                            )
+                            .vertical_scrollbar(&self.results_scroll)
+                            .into_any_element()
+                    } else {
+                        div()
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .child(
+                                div()
+                                    .id("result-preview")
+                                    .size_full()
+                                    .overflow_scroll()
+                                    .track_scroll(&self.results_scroll)
+                                    .p(px(18.))
+                                    .bg(rgb(colors.monitor))
+                                    .font_family("Cascadia Mono")
+                                    .text_size(px(13.))
+                                    .line_height(px(21.))
+                                    .child(div().whitespace_nowrap().child(content.clone())),
+                            )
+                            .vertical_scrollbar(&self.results_scroll)
+                            .horizontal_scrollbar(&self.results_scroll)
+                            .into_any_element()
+                    };
                     div()
                         .flex()
                         .flex_col()
                         .flex_1()
+                        .min_w_0()
                         .min_h_0()
-                        .child(
-                            div()
-                                .id("result-preview")
-                                .flex_1()
-                                .min_h_0()
-                                .overflow_scroll()
-                                .track_scroll(&self.results_scroll)
-                                .p(px(18.))
-                                .bg(rgb(colors.monitor))
-                                .font_family("Cascadia Mono")
-                                .text_size(px(13.))
-                                .line_height(px(21.))
-                                .child(div().whitespace_nowrap().child(content.clone())),
-                        )
+                        .child(body)
                         .child(
                             div()
                                 .flex()
@@ -2433,9 +2714,11 @@ impl Workbench {
                                 .text_size(px(12.))
                                 .text_color(rgb(colors.muted))
                                 .child(if *truncated {
-                                    "预览已截断，请点击「定位文件」查看完整内容。"
+                                    "预览已截断（超过 64 KB），请点击「定位文件」查看完整内容。"
+                                } else if self.result_wrap {
+                                    "已开启自动换行，超长单行会完整折行显示；也可切换为单行横向滚动。"
                                 } else {
-                                    "结果文件包含恢复出的明文密码。"
+                                    "当前为单行模式，可使用底部横向滚动条查看完整内容。"
                                 })
                                 .child(format!("{lines} 行")),
                         )
@@ -3522,6 +3805,13 @@ fn cat_ears(colors: Palette) -> impl IntoElement {
         )
 }
 
+#[cfg(windows)]
+fn restore_root_background() -> impl IntoElement {
+    canvas(|_, _, _| {}, |_, _, _, cx| reset_root_background(cx))
+        .absolute()
+        .size_0()
+}
+
 #[cfg(all(test, windows))]
 mod layout_tests {
     use super::*;
@@ -3672,12 +3962,27 @@ mod layout_tests {
                                 bench.update(cx, |b, cx| {
                                     b.attack = 3;
                                     b.found_passwords = vec!["layout sample".into()];
+                                    b.result_preview = Some(Ok((
+                                        "$krb5asrep$23$PILINGSHAN@DAMDDOS.CTCT:7acf4d1b2b21a3a9a6352c06a20b52bd$2f4c93ed4f883f874f7714e78d36e81c7dfedc93fc10acfa640b6c227b731ec7309655e3c82591d89abcdef0123456789abcdef:SuperSecretPass2026\n".into(),
+                                        false,
+                                    )));
                                     b.page = page;
                                     cx.notify();
                                 });
                                 window.refresh();
                                 window.draw(cx).clear();
+                                assert_eq!(
+                                    gpui_component::Theme::global(cx).background,
+                                    gpui::transparent_black()
+                                );
                             }
+                            bench.update(cx, |b, cx| {
+                                b.page = Page::Results;
+                                b.result_wrap = false;
+                                cx.notify();
+                            });
+                            window.refresh();
+                            window.draw(cx).clear();
                             window.remove_window();
                         })
                         .unwrap();

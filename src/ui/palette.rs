@@ -155,8 +155,14 @@ pub fn configure_theme(appearance: Appearance, cx: &mut App) {
     theme.font_size = px(16.);
     theme.mono_font_family = "Cascadia Mono".into();
     theme.radius = px(8.);
-    // Root paints this beneath our antialiased desktop surface.
-    theme.background = gpui::transparent_black();
+    // Root paints this beneath our antialiased desktop surface on Windows.
+    // Workbench switches Theme.background to an opaque panel color for child widgets
+    // (Select dropdowns, Inputs, Tooltips) and restores transparency on Windows after prepaint.
+    theme.background = if cfg!(windows) {
+        gpui::transparent_black()
+    } else {
+        rgb(colors.panel).into()
+    };
     theme.foreground = rgb(colors.ink).into();
     theme.muted = rgb(colors.raised).into();
     theme.secondary = rgb(colors.raised).into();
@@ -178,4 +184,13 @@ pub fn configure_theme(appearance: Appearance, cx: &mut App) {
     theme.list_hover = rgb(colors.raised).into();
     theme.list_active = rgb(colors.selection).into();
     cx.set_global(colors);
+}
+
+pub(super) fn set_widget_background(colors: Palette, cx: &mut App) {
+    Theme::global_mut(cx).background = rgb(colors.panel).into();
+}
+
+#[cfg(windows)]
+pub(super) fn reset_root_background(cx: &mut App) {
+    Theme::global_mut(cx).background = gpui::transparent_black();
 }

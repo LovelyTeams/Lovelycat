@@ -971,16 +971,7 @@ fn read_new_passwords(
         } else {
             plain.rsplit(|b| *b == b':').next().unwrap_or(plain)
         };
-        let decoded = plain
-            .strip_prefix(b"$HEX[")
-            .and_then(|v| v.strip_suffix(b"]"))
-            .and_then(|v| hex::decode(v).ok());
-        let text = decoded
-            .as_deref()
-            .and_then(|v| std::str::from_utf8(v).ok())
-            .filter(|s| !s.chars().any(char::is_control))
-            .map(str::to_owned)
-            .unwrap_or_else(|| String::from_utf8_lossy(plain).into_owned());
+        let text = decode_hashcat_plain(plain);
         batch.push(text);
         if batch.len() == 256 {
             publish(std::mem::take(&mut batch));
@@ -990,6 +981,29 @@ fn read_new_passwords(
         publish(batch);
     }
     Ok(())
+}
+
+fn decode_hashcat_plain(plain: &[u8]) -> String {
+    let decoded = plain
+        .strip_prefix(b"$HEX[")
+        .and_then(|v| v.strip_suffix(b"]"))
+        .and_then(|v| hex::decode(v).ok());
+    decoded
+        .as_deref()
+        .and_then(|v| std::str::from_utf8(v).ok())
+        .filter(|s| !s.chars().any(char::is_control))
+        .map(str::to_owned)
+        .unwrap_or_else(|| String::from_utf8_lossy(plain).into_owned())
+}
+
+pub fn split_result_line(line: &str) -> (Option<&str>, String) {
+    let clean = line.trim_end_matches('\r');
+    if let Some((hash, plain)) = clean.rsplit_once(':')
+        && (hash.starts_with('$') || hash.len() >= 16 || hash.contains(':'))
+    {
+        return (Some(hash), decode_hashcat_plain(plain.as_bytes()));
+    }
+    (None, decode_hashcat_plain(clean.as_bytes()))
 }
 
 pub fn preview(path: &Path) -> io::Result<(String, bool)> {
@@ -1366,5 +1380,26 @@ OpenCL Platform ID #1
                 "Hash parsing error in hashfile: bad",
             ]
         );
+    }
+
+    #[test]
+    fn splits_long_hash_and_password_result_lines() {
+        let krb = "$krb5asrep$23$USER@DOMAIN.LOCAL:7acf4d1b2b21a3a9a6352c06a20b52bd$2f4c93ed4f883f874f7714e78d36e81c:P@ssw0rd!";
+        let (hash, pass) = split_result_line(krb);
+        assert_eq!(
+            hash,
+            Some("$krb5asrep$23$USER@DOMAIN.LOCAL:7acf4d1b2b21a3a9a6352c06a20b52bd$2f4c93ed4f883f874f7714e78d36e81c")
+        );
+        assert_eq!(pass, "P@ssw0rd!");
+
+        let hex_line = "5d41402abc4b2a76b9719d911017c592:$HEX[613a62]";
+        let (hash, pass) = split_result_line(hex_line);
+        assert_eq!(hash, Some("5d41402abc4b2a76b9719d911017c592"));
+        assert_eq!(pass, "a:b");
+
+        let plain_only = "my_zip_password";
+        let (hash, pass) = split_result_line(plain_only);
+        assert_eq!(hash, None);
+        assert_eq!(pass, "my_zip_password");
     }
 }

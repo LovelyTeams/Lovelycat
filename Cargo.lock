@@ -3403,7 +3403,7 @@ dependencies = [
 
 [[package]]
 name = "lovelycat"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "async-channel 2.5.0",
  "base64",

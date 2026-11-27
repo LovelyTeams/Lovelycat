@@ -239,10 +239,13 @@ pub struct Workbench {
     results_search: Entity<InputState>,
     selected_result: Option<PathBuf>,
     result_preview: Option<Result<(String, bool), String>>,
+    result_wrap: bool,
     results_scroll: ScrollHandle,
     form_scroll: ScrollHandle,
     settings_scroll: ScrollHandle,
     copied_result: bool,
+    copied_result_passwords: bool,
+    copied_result_row: Option<usize>,
     copied_devices: bool,
 }
 
@@ -356,10 +359,13 @@ impl Workbench {
             results_search,
             selected_result: None,
             result_preview: None,
+            result_wrap: true,
             results_scroll: ScrollHandle::new(),
             form_scroll: ScrollHandle::new(),
             settings_scroll: ScrollHandle::new(),
             copied_result: false,
+            copied_result_passwords: false,
+            copied_result_row: None,
             copied_devices: false,
         };
         cx.observe_window_bounds(window, |this, window, cx| {
@@ -1058,6 +1064,8 @@ impl Workbench {
         if self.selected_result != path {
             self.results_scroll.set_offset(gpui::point(px(0.), px(0.)));
             self.copied_result = false;
+            self.copied_result_passwords = false;
+            self.copied_result_row = None;
         }
         self.selected_result = path;
     }
